@@ -38,8 +38,7 @@ struct CompactBarView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            PixelOctopusSprite(state: mascotState)
-                .frame(width: 32, height: 28)
+            CoveMascotView(state: mascotState, scale: .compact)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(centerText)
@@ -66,8 +65,7 @@ struct CompactBarView: View {
                 }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 5)
         .background {
             Capsule()
                 .fill(
@@ -80,22 +78,23 @@ struct CompactBarView: View {
                     )
                 )
                 .overlay(Capsule().stroke(hasPendingPermission ? PixelPalette.alert : PixelPalette.foam.opacity(0.30), lineWidth: 1))
-                .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+                .overlay(alignment: .bottom) {
+                    Capsule()
+                        .fill(Color.black.opacity(0.22))
+                        .offset(y: 2)
+                        .mask(Capsule().padding(.top, 20))
+                }
         }
         .contentShape(Capsule())
         .onTapGesture {
-            if hasPendingPermission {
-                viewModel.uiMode = .permissionInterruption
-                viewModel.openReason = .notification
-            } else {
-                viewModel.toggle()
-            }
+            viewModel.toggle()
         }
     }
 
     private var subtitle: String {
         if let request = viewModel.pendingHookRequest {
-            return request.projectPath.split(separator: "/").last.map(String.init)?.uppercased() ?? "NEEDS DECISION"
+            let folder = request.projectPath.split(separator: "/").last.map(String.init) ?? "NEEDS DECISION"
+            return "\(folder.uppercased()) · ping-card v2"
         }
         if viewModel.activeSessions > 0 {
             return "\(viewModel.activeSessions) ACTIVE · \(viewModel.islands.count) ISLANDS"

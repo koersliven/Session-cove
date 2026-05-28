@@ -98,7 +98,6 @@ struct IslandSessionListView: View {
                         .onHover { hovered in
                             hoveredSessionID = hovered ? session.id : (hoveredSessionID == session.id ? nil : hoveredSessionID)
                         }
-                        .onTapGesture { viewModel.selectSession(session) }
                 }
             }
             .padding(.horizontal, 12)
@@ -126,12 +125,12 @@ struct IslandSessionListView: View {
             GroundedMascot(
                 active: session.status == .active,
                 archived: session.status == .archived,
-                size: isHovered ? 60 : 48,
+                size: isHovered ? 44 : 38,
                 stateOverride: hasPending || isHovered ? .attention : nil,
                 facingLeft: index.isMultiple(of: 2)
             )
         }
-        .frame(width: 74, height: 74)
+        .frame(width: 58, height: 58)
         .animation(.snappy(duration: 0.16), value: isHovered)
         .animation(.snappy(duration: 0.16), value: hasPending)
     }
@@ -139,33 +138,41 @@ struct IslandSessionListView: View {
     private func sessionCard(_ session: SessionRecord) -> some View {
         let isHovered = hoveredSessionID == session.id
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 7) {
-                PixelOctopusSprite(state: isHovered ? .attention : mascotState(for: session))
-                    .frame(width: 34, height: 30)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(statusLabel(for: session))
-                        .font(.system(size: 9, weight: .black, design: .monospaced))
-                        .foregroundStyle(statusColor(for: session))
-                    Text(session.relativeTime.uppercased())
-                        .font(.system(size: 8, weight: .black, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.52))
+            // Info area - taps here open session detail
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 7) {
+                    CoveMascotView(state: isHovered ? .attention : mascotState(for: session), scale: .compact)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(statusLabel(for: session))
+                            .font(.system(size: 9, weight: .black, design: .monospaced))
+                            .foregroundStyle(statusColor(for: session))
+                        Text(session.relativeTime.uppercased())
+                            .font(.system(size: 8, weight: .black, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.52))
+                    }
                 }
+
+                Text(session.displayTitle)
+                    .font(.system(size: 10, weight: .black, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .lineLimit(2)
+                    .frame(height: 28, alignment: .topLeading)
             }
+            .contentShape(Rectangle())
+            .onTapGesture { viewModel.selectSession(session) }
 
-            Text(session.displayTitle)
-                .font(.system(size: 10, weight: .black, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(2)
-                .frame(height: 28, alignment: .topLeading)
-
+            // Action row - button has its own click target, no parent gesture conflict
             HStack {
                 if let branch = session.gitBranch {
                     Text(branch.uppercased())
                         .font(.system(size: 8, weight: .black, design: .monospaced))
                         .foregroundStyle(PixelPalette.foam.opacity(0.70))
                         .lineLimit(1)
+                        .onTapGesture { viewModel.selectSession(session) }
                 }
                 Spacer()
+                    .contentShape(Rectangle())
+                    .onTapGesture { viewModel.selectSession(session) }
                 Button {
                     viewModel.resumeSession(session)
                 } label: {
@@ -192,7 +199,7 @@ struct IslandSessionListView: View {
     private func approvalFlag(_ request: HookPermissionRequest) -> some View {
         PixelHUDPanel {
             HStack(spacing: 7) {
-                PixelOctopusSprite(state: .attention).frame(width: 30, height: 26)
+                CoveMascotView(state: .attention, scale: .ping)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("APPROVAL")
                         .font(.system(size: 9, weight: .black, design: .monospaced))
@@ -206,11 +213,11 @@ struct IslandSessionListView: View {
     }
 
     private func baseIslandFrame(in size: CGSize) -> CGRect {
-        let width = min(size.width * 0.72, 820)
-        let height = min(size.height * 0.50, 320)
+        let width = min(size.width * 0.82, 860)
+        let height = min(size.height * 0.56, 330)
         return CGRect(
             x: size.width * 0.50 - width / 2,
-            y: size.height * 0.54 - height / 2,
+            y: size.height * 0.49 - height / 2,
             width: width,
             height: height
         )

@@ -28,4 +28,12 @@ final class CovePanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown || event.type == .rightMouseDown {
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
 }

@@ -9,6 +9,12 @@ enum CoveUIMode: Equatable, Sendable {
     case permissionInterruption
 }
 
+enum CoveFrameSize: Equatable, Sendable {
+    case compact      // 300x50
+    case ping         // 360x220
+    case expanded     // 520x480
+}
+
 enum CoveOpenReason: Equatable, Sendable {
     case click
     case hover
@@ -24,6 +30,7 @@ final class CoveViewModel: @unchecked Sendable {
     var openReason: CoveOpenReason = .unknown
     var selectedIsland: ProjectIsland?
     var selectedSession: SessionRecord?
+    var highlightedIslandID: String?
     var pendingHookRequest: HookPermissionRequest?
     var lastHookDecision: HookApprovalDecision?
     var hookIntegrationError: String?
@@ -34,7 +41,15 @@ final class CoveViewModel: @unchecked Sendable {
     private var hookPollTask: Task<Void, Never>?
 
     var isExpanded: Bool {
-        uiMode != .compact
+        uiMode != .compact && uiMode != .permissionInterruption
+    }
+
+    var frameSize: CoveFrameSize {
+        switch uiMode {
+        case .compact: .compact
+        case .permissionInterruption: .ping
+        default: .expanded
+        }
     }
 
     var totalSessions: Int {
@@ -83,28 +98,16 @@ final class CoveViewModel: @unchecked Sendable {
     @MainActor
     func refresh() async {
         var scanned = SessionScanner.scan()
-        let now = Date()
-        let activeThreshold: TimeInterval = 30
-        let recentThreshold: TimeInterval = 24 * 60 * 60
-
-        for i in scanned.indices {
-            for j in scanned[i].sessions.indices {
-                let session = scanned[i].sessions[j]
-                let age = now.timeIntervalSince(session.lastModified)
-                if age < activeThreshold {
-                    scanned[i].sessions[j].status = .active
-                } else if age < recentThreshold {
-                    scanned[i].sessions[j].status = .recentlyIdle
-                } else {
-                    scanned[i].sessions[j].status = .archived
-                }
-            }
-        }
+        let candidateIds = Set(scanned.flatMap { $0.sessions.map(\.id) })
+        let activeIds = ProcessDetector.shared.detectActiveSessionIds(candidateIds: candidateIds)
+        ProcessDetector.shared.applyStatuses(activeIds: activeIds, to: &scanned)
         self.islands = scanned
     }
 
     func toggle() {
-        if isExpanded {
+        if uiMode == .permissionInterruption {
+            return
+        } else if isExpanded {
             closeToCompact()
         } else {
             presentHarbor(reason: .click)
@@ -125,11 +128,26 @@ final class CoveViewModel: @unchecked Sendable {
         selectedSession = nil
     }
 
+    var highlightedIsland: ProjectIsland? {
+        if let id = highlightedIslandID {
+            return islands.first { $0.id == id }
+        }
+        return attentionIsland ?? islands.sorted { lhs, rhs in
+            if lhs.activeCount != rhs.activeCount { return lhs.activeCount > rhs.activeCount }
+            let lt = lhs.sessions.first?.lastModified ?? .distantPast
+            let rt = rhs.sessions.first?.lastModified ?? .distantPast
+            return lt > rt
+        }.first
+    }
+
+    func highlightIsland(_ island: ProjectIsland) {
+        highlightedIslandID = island.id
+    }
+
     func selectIsland(_ island: ProjectIsland) {
+        highlightedIslandID = island.id
         selectedIsland = island
         selectedSession = nil
-        uiMode = .projectIsland
-        openReason = .click
     }
 
     func selectSession(_ session: SessionRecord) {
@@ -140,6 +158,7 @@ final class CoveViewModel: @unchecked Sendable {
     }
 
     func resumeSession(_ session: SessionRecord) {
+        print("[CoveViewModel] resumeSession tapped: \(session.id)")
         SessionResumer.resume(session: session)
     }
 
@@ -175,8 +194,8 @@ final class CoveViewModel: @unchecked Sendable {
     }
 
     func back() {
-        if pendingHookRequest != nil, uiMode == .permissionInterruption {
-            presentHarbor(reason: .click)
+        if uiMode == .permissionInterruption {
+            closeToCompact()
         } else if selectedSession != nil {
             selectedSession = nil
             uiMode = selectedIsland == nil ? .harborOverview : .projectIsland
@@ -196,12 +215,8 @@ final class CoveViewModel: @unchecked Sendable {
                 if let restored = modeBeforeInterruption, restored != .permissionInterruption {
                     uiMode = restored
                     modeBeforeInterruption = nil
-                } else if selectedSession != nil {
-                    uiMode = .sessionFocus
-                } else if selectedIsland != nil {
-                    uiMode = .projectIsland
                 } else {
-                    presentHarbor(reason: .notification)
+                    uiMode = .compact
                 }
             }
             return

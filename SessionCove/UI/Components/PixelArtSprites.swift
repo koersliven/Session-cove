@@ -335,30 +335,18 @@ struct PixelIslandSprite: View {
     ]
 
     var body: some View {
-        Group {
-            if let image = MascotImage.island {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.none)
-                    .antialiased(false)
-                    .saturation(mood.saturation)
-                    .brightness(mood.brightness)
-                    .shadow(color: PixelPalette.ink.opacity(0.20), radius: 0, x: 0, y: 5)
-            } else {
-                PixelGridSprite(rows: fallbackMap) { token in
-                    switch token {
-                    case "S": mood.sand
-                    case "G": mood.grass
-                    case "L": mood.palm
-                    case "T": PixelPalette.trunk
-                    case "R": mood.rock
-                    case "O": PixelPalette.ink.opacity(0.70)
-                    default: .clear
-                    }
-                }
-                .aspectRatio(29 / 17, contentMode: .fit)
+        PixelGridSprite(rows: fallbackMap) { token in
+            switch token {
+            case "S": mood.sand
+            case "G": mood.grass
+            case "L": mood.palm
+            case "T": PixelPalette.trunk
+            case "R": mood.rock
+            case "O": PixelPalette.ink.opacity(0.70)
+            default: .clear
             }
         }
+        .aspectRatio(29 / 17, contentMode: .fit)
     }
 }
 
@@ -403,52 +391,31 @@ struct PixelOctopusSprite: View {
     }
 
     var body: some View {
-        Group {
-            if let image = imageForState {
-                ZStack(alignment: .topTrailing) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.none)
-                        .antialiased(false)
-                        .scaledToFit()
-                        .saturation(state == .sleeping ? 0.82 : 1.04)
-                        .brightness(state == .attention ? 0.04 : 0)
-
-                    if state == .attention {
-                        Text("!")
-                            .font(.system(size: 15, weight: .black, design: .monospaced))
-                            .foregroundStyle(PixelPalette.alert)
-                            .shadow(color: PixelPalette.ink, radius: 0, x: 1, y: 1)
-                            .offset(x: -4, y: 0)
-                    }
+        ZStack(alignment: .topTrailing) {
+            PixelGridSprite(rows: fallbackMap) { token in
+                switch token {
+                case "O": PixelPalette.octo
+                case "L": PixelPalette.octoLight
+                case "D": PixelPalette.octoDark
+                case "H": PixelPalette.headphone
+                case "B": PixelPalette.headphoneDark
+                case "E": PixelPalette.ink.opacity(0.84)
+                case "M": PixelPalette.ink
+                case "S": PixelPalette.screen
+                case "-": PixelPalette.ink.opacity(0.76)
+                case "Z": .white.opacity(0.82)
+                default: .clear
                 }
-            } else {
-                PixelGridSprite(rows: fallbackMap) { token in
-                    switch token {
-                    case "O": PixelPalette.octo
-                    case "L": PixelPalette.octoLight
-                    case "D": PixelPalette.octoDark
-                    case "H": PixelPalette.headphone
-                    case "B": PixelPalette.headphoneDark
-                    case "E": PixelPalette.ink.opacity(0.84)
-                    case "M": PixelPalette.ink
-                    case "S": PixelPalette.screen
-                    case "-": PixelPalette.ink.opacity(0.76)
-                    case "Z": .white.opacity(0.82)
-                    default: .clear
-                    }
-                }
-                .aspectRatio(16 / 13, contentMode: .fit)
             }
-        }
-    }
+            .aspectRatio(16 / 13, contentMode: .fit)
 
-    private var imageForState: NSImage? {
-        switch state {
-        case .sleeping:
-            MascotImage.sleeping
-        default:
-            MascotImage.working
+            if state == .attention {
+                Text("!")
+                    .font(.system(size: 15, weight: .black, design: .monospaced))
+                    .foregroundStyle(PixelPalette.alert)
+                    .shadow(color: PixelPalette.ink, radius: 0, x: 1, y: 1)
+                    .offset(x: -4, y: 0)
+            }
         }
     }
 }

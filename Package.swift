@@ -12,6 +12,8 @@ let package = Package(
             resources: [
                 .copy("Resources/claude_working.png"),
                 .copy("Resources/claude_sleeping.png"),
+                .copy("Resources/claude_attention.png"),
+                .copy("Resources/claude_idle.png"),
                 .copy("Resources/island.png")
             ],
             swiftSettings: [

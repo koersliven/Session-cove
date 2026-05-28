@@ -3,22 +3,26 @@ import Foundation
 final class ProcessDetector: @unchecked Sendable {
     static let shared = ProcessDetector()
 
-    func detectActiveSessionIds() -> Set<String> {
+    func detectActiveSessionIds(candidateIds: Set<String> = []) -> Set<String> {
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = ["-eo", "pid,args"]
         process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
+            print("[ProcessDetector] ps failed: \(error)")
             return []
         }
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0,
+              let output = String(data: data, encoding: .utf8) else { return [] }
 
         var activeIds: Set<String> = []
 
@@ -32,6 +36,10 @@ final class ProcessDetector: @unchecked Sendable {
                 if !sessionId.isEmpty {
                     activeIds.insert(String(sessionId))
                 }
+            }
+
+            for id in candidateIds where trimmed.contains(id) {
+                activeIds.insert(id)
             }
         }
 

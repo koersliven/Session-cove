@@ -14,7 +14,7 @@ struct AnimatedMascot: View {
     }
 
     var body: some View {
-        PixelOctopusSprite(state: state)
+        CoveMascotView(state: state, scale: .island, grounded: !active)
             .frame(width: size, height: size)
             .opacity(archived ? 0.88 : 1.0)
             .saturation(active ? 1.08 : archived ? 0.72 : 0.95)

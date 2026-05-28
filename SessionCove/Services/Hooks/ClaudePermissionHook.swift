@@ -162,6 +162,32 @@ enum ClaudePermissionHook {
             seed = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str) + str(time.time())
             return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
+        def build_fallback_permission(payload, value):
+            tool_name = str(payload.get("tool_name") or "Tool")
+            tool_input = payload.get("tool_input") or {}
+            destination = "session" if value == "allowSession" else "localSettings"
+            if tool_name == "Bash":
+                command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+                if command:
+                    binary = command.strip().split()[0] if command.strip() else ""
+                    if binary in ("git", "ls", "cat", "grep", "find", "npm", "yarn", "swift", "python3", "python"):
+                        rule_content = f"allow tool: Bash matching command starting with '{binary}'"
+                    else:
+                        rule_content = f"allow tool: Bash matching command: {command[:120]}"
+                else:
+                    rule_content = "allow tool: Bash"
+            elif tool_name in ("Read", "Write", "Edit"):
+                path = ""
+                if isinstance(tool_input, dict):
+                    path = tool_input.get("file_path") or tool_input.get("path") or ""
+                if path:
+                    rule_content = f"allow tool: {tool_name} matching file_path: {path}"
+                else:
+                    rule_content = f"allow tool: {tool_name}"
+            else:
+                rule_content = f"allow tool: {tool_name}"
+            return [{"toolName": tool_name, "ruleContent": rule_content, "destination": destination}]
+
         def output_decision(payload, decision):
             value = decision.get("decision")
             hook_output = {
@@ -176,17 +202,22 @@ enum ClaudePermissionHook {
                 }
             else:
                 hook_output["decision"] = {"behavior": "allow"}
-                suggestions = payload.get("permission_suggestions")
-                if value in ("allowSession", "alwaysAllow") and isinstance(suggestions, list) and suggestions:
-                    updates = []
-                    for suggestion in suggestions:
-                        if isinstance(suggestion, dict):
-                            cloned = dict(suggestion)
-                            if value == "allowSession":
-                                cloned["destination"] = "session"
-                            updates.append(cloned)
-                    if updates:
-                        hook_output["decision"]["updatedPermissions"] = updates
+                if value in ("allowSession", "alwaysAllow"):
+                    suggestions = payload.get("permission_suggestions")
+                    if isinstance(suggestions, list) and suggestions:
+                        updates = []
+                        for suggestion in suggestions:
+                            if isinstance(suggestion, dict):
+                                cloned = dict(suggestion)
+                                if value == "allowSession":
+                                    cloned["destination"] = "session"
+                                elif value == "alwaysAllow":
+                                    cloned["destination"] = "localSettings"
+                                updates.append(cloned)
+                        if updates:
+                            hook_output["decision"]["updatedPermissions"] = updates
+                    else:
+                        hook_output["decision"]["updatedPermissions"] = build_fallback_permission(payload, value)
             print(json.dumps({"hookSpecificOutput": hook_output}, ensure_ascii=False), flush=True)
 
         def main():

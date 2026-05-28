@@ -3,6 +3,8 @@ import AppKit
 enum MascotImage {
     static let working: NSImage? = loadCropped("claude_working")
     static let sleeping: NSImage? = loadCropped("claude_sleeping")
+    static let attention: NSImage? = loadCropped("claude_attention")
+    static let idle: NSImage? = loadCropped("claude_idle")
     static let island: NSImage? = loadCropped("island")
 
     private static func loadCropped(_ name: String) -> NSImage? {

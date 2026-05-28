@@ -68,8 +68,7 @@ struct CoveMapView: View {
             HStack(alignment: .top) {
                 PixelHUDPanel {
                     HStack(spacing: 8) {
-                        PixelOctopusSprite(state: .idle)
-                            .frame(width: 28, height: 28)
+                        CoveMascotView(state: .idle, scale: .ping)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("SESSION COVE")
                                 .font(.system(size: 12, weight: .black, design: .monospaced))

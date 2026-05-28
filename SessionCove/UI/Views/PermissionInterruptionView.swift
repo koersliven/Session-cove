@@ -1,6 +1,15 @@
 import SwiftUI
 
-struct PermissionInterruptionView: View {
+/// DEPRECATED — do NOT use as the default permission route.
+///
+/// This view was the original full-screen permission interruption scene with
+/// PixelOceanBackground, large island, attention ring, and full HookApprovalPanel.
+/// It has been replaced by `PermissionPingCard` routed through `.ping` frame size.
+///
+/// Keep this file only for reference / debug / potential future map-mode revival.
+/// If re-enabling, add a dedicated opt-in flag (e.g. `#if DEBUG_LEGACY_PERMISSION_SCENE`)
+/// and never connect it to the default `.permissionInterruption` route.
+struct LegacyPermissionInterruptionView: View {
     @Bindable var viewModel: CoveViewModel
 
     private var request: HookPermissionRequest? {

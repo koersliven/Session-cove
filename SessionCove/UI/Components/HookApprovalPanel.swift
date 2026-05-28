@@ -8,8 +8,7 @@ struct HookApprovalPanel: View {
         PixelHUDPanel {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    PixelOctopusSprite(state: .attention)
-                        .frame(width: 42, height: 42)
+                    CoveMascotView(state: .attention, scale: .approval)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Permission Request")
                             .font(.system(size: 13, weight: .black, design: .monospaced))
