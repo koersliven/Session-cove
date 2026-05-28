@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Session Cove - Game Concept</title>
+  <style>
+    :root {
+      --ink: #17324d;
+      --deep: #063c6a;
+      --sea-1: #6bd6ff;
+      --sea-2: #1a8ed0;
+      --sea-3: #1267a5;
+      --sand: #ffd875;
+      --panel: rgba(8, 38, 68, 0.86);
+      --panel-2: rgba(255, 255, 255, 0.16);
+      --green: #55f28f;
+      --yellow: #ffd85f;
+      --gray: #b8c8d9;
+      --orange: #ff8d39;
+      --blue: #28a8ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: white;
+      background:
+        radial-gradient(circle at 22% 16%, rgba(255,255,255,0.16), transparent 24%),
+        linear-gradient(135deg, #06223d 0%, #0a456f 42%, #0d79a8 100%);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      overflow: hidden;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+    }
+
+    .desktop {
+      width: min(1420px, 96vw);
+      height: min(820px, 92vh);
+      position: relative;
+      border: 4px solid rgba(255, 255, 255, 0.72);
+      border-radius: 28px;
+      background: linear-gradient(180deg, #07243f, #083456);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.42), inset 0 0 0 2px rgba(0,0,0,0.2);
+      overflow: hidden;
+    }
+
+    .notch {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 310px;
+      height: 38px;
+      background: #05070b;
+      border-radius: 0 0 22px 22px;
+      z-index: 20;
+      display: grid;
+      place-items: center;
+      color: rgba(255,255,255,0.8);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .cove-window {
+      position: absolute;
+      left: 48px;
+      right: 48px;
+      top: 62px;
+      bottom: 42px;
+      border: 4px solid #0b2c4a;
+      border-radius: 24px;
+      overflow: hidden;
+      background: #0a5f95;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34), inset 0 0 0 4px rgba(255,255,255,0.16);
+    }
+
+    .ocean {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(transparent 0 31px, rgba(255,255,255,0.05) 32px),
+        linear-gradient(90deg, transparent 0 31px, rgba(255,255,255,0.04) 32px),
+        radial-gradient(circle at 15% 25%, rgba(154,232,255,0.35), transparent 16%),
+        radial-gradient(circle at 85% 60%, rgba(59,196,255,0.25), transparent 22%),
+        linear-gradient(135deg, var(--sea-1), var(--sea-2) 45%, var(--sea-3));
+      background-size: 32px 32px, 32px 32px, auto, auto, auto;
+      image-rendering: pixelated;
+    }
+
+    .ocean::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(90deg, rgba(255,255,255,0.18) 0 14px, transparent 14px 100%),
+        linear-gradient(90deg, rgba(255,255,255,0.12) 0 10px, transparent 10px 100%);
+      background-size: 92px 4px, 126px 4px;
+      background-position: 16px 150px, 52px 430px;
+      opacity: 0.42;
+      animation: waves 5s steps(6) infinite;
+    }
+
+    @keyframes waves {
+      from { transform: translateX(0); }
+      to { transform: translateX(64px); }
+    }
+
+    .hud {
+      position: absolute;
+      z-index: 12;
+      left: 22px;
+      right: 22px;
+      top: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 18px;
+      border: 3px solid rgba(255,255,255,0.32);
+      border-radius: 18px;
+      background: var(--panel);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 0 rgba(0,0,0,0.16);
+    }
+
+    .title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .title-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      background: #104f82;
+      border: 3px solid rgba(255,255,255,0.38);
+      border-radius: 10px;
+      box-shadow: inset -4px -4px 0 rgba(0,0,0,0.18);
+    }
+
+    .title h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1;
+      letter-spacing: 0.04em;
+    }
+
+    .title p {
+      margin: 5px 0 0;
+      font-size: 11px;
+      color: rgba(255,255,255,0.68);
+    }
+
+    .stats {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .chip {
+      padding: 8px 10px;
+      border: 2px solid rgba(255,255,255,0.24);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.9);
+      font-size: 12px;
+      box-shadow: inset -3px -3px 0 rgba(0,0,0,0.12);
+    }
+
+    .map {
+      position: absolute;
+      inset: 88px 18px 18px;
+      z-index: 4;
+    }
+
+    .island-node {
+      position: absolute;
+      width: 190px;
+      height: 142px;
+      transform: translate(-50%, -50%);
+      cursor: pointer;
+      transition: transform 160ms steps(2), filter 160ms steps(2);
+    }
+
+    .island-node:hover {
+      transform: translate(-50%, -50%) translateY(-8px) scale(1.04);
+      filter: drop-shadow(0 10px 0 rgba(7, 42, 70, 0.28));
+    }
+
+    .island-node.primary { width: 250px; height: 186px; }
+    .island-node.small { width: 156px; height: 116px; }
+
+    .island-sprite {
+      position: absolute;
+      inset: 20px 0 0;
+      width: 100%;
+      height: auto;
+      image-rendering: pixelated;
+      filter: drop-shadow(0 8px 0 rgba(5, 47, 82, 0.25));
+    }
+
+    .island-node.sleepy .island-sprite { filter: grayscale(0.2) saturate(0.72) drop-shadow(0 8px 0 rgba(5,47,82,0.25)); }
+    .island-node.hot .island-sprite { filter: saturate(1.25) drop-shadow(0 8px 0 rgba(5,47,82,0.25)); }
+
+    .mascot {
+      position: absolute;
+      left: 50%;
+      top: 28px;
+      width: 66px;
+      transform: translateX(-50%);
+      image-rendering: pixelated;
+      animation: work-bob 820ms steps(2) infinite;
+      filter: drop-shadow(0 5px 0 rgba(4, 31, 50, 0.28));
+      z-index: 4;
+    }
+
+    .primary .mascot { width: 84px; top: 32px; }
+    .small .mascot { width: 48px; top: 24px; }
+    .sleepy .mascot { animation: sleep-breathe 2.2s steps(3) infinite; }
+    .idle .mascot { animation: idle-bob 2.4s steps(4) infinite; opacity: 0.78; }
+
+    @keyframes work-bob {
+      0%, 100% { transform: translateX(-50%) translateY(0); }
+      50% { transform: translateX(-50%) translateY(-5px); }
+    }
+
+    @keyframes idle-bob {
+      0%, 100% { transform: translateX(-50%) translateY(0); }
+      50% { transform: translateX(-50%) translateY(-3px); }
+    }
+
+    @keyframes sleep-breathe {
+      0%, 100% { transform: translateX(-50%) scale(1); }
+      50% { transform: translateX(-50%) scale(1.03); }
+    }
+
+    .session-bubble {
+      position: absolute;
+      z-index: 6;
+      right: 10px;
+      top: 12px;
+      min-width: 36px;
+      padding: 5px 7px;
+      border: 2px solid rgba(255,255,255,0.85);
+      border-radius: 8px;
+      background: rgba(4, 34, 58, 0.88);
+      font-size: 11px;
+      box-shadow: 3px 3px 0 rgba(0,0,0,0.2);
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      margin-right: 4px;
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green);
+    }
+
+    .sleepy .status-dot { background: var(--gray); box-shadow: none; }
+    .idle .status-dot { background: var(--yellow); box-shadow: 0 0 10px var(--yellow); }
+
+    .label {
+      position: absolute;
+      left: 50%;
+      bottom: -18px;
+      transform: translateX(-50%);
+      max-width: 220px;
+      padding: 6px 9px;
+      border: 2px solid rgba(255,255,255,0.45);
+      border-radius: 8px;
+      background: rgba(6, 35, 58, 0.82);
+      color: white;
+      font-size: 11px;
+      white-space: nowrap;
+      text-align: center;
+      box-shadow: 3px 3px 0 rgba(0,0,0,0.18);
+    }
+
+    .side-panel {
+      position: absolute;
+      z-index: 14;
+      right: 24px;
+      bottom: 24px;
+      width: 320px;
+      border: 3px solid rgba(255,255,255,0.36);
+      border-radius: 18px;
+      background: var(--panel);
+      padding: 16px;
+      box-shadow: 0 10px 0 rgba(0,0,0,0.18);
+    }
+
+    .side-panel h2 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      color: #fff7c7;
+    }
+
+    .quest {
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.11);
+      margin-bottom: 9px;
+      border: 2px solid rgba(255,255,255,0.12);
+    }
+
+    .quest img {
+      width: 42px;
+      height: 42px;
+      object-fit: contain;
+      image-rendering: pixelated;
+    }
+
+    .quest strong {
+      display: block;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+
+    .quest span {
+      display: block;
+      color: rgba(255,255,255,0.66);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .bottom-dock {
+      position: absolute;
+      z-index: 13;
+      left: 26px;
+      bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      border-radius: 18px;
+      border: 3px solid rgba(255,255,255,0.3);
+      background: rgba(6, 30, 51, 0.82);
+      box-shadow: 0 10px 0 rgba(0,0,0,0.18);
+    }
+
+    .tool-card {
+      width: 84px;
+      padding: 9px 7px;
+      text-align: center;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.12);
+      border: 2px solid rgba(255,255,255,0.16);
+    }
+
+    .tool-card img {
+      width: 42px;
+      height: 42px;
+      object-fit: contain;
+      image-rendering: pixelated;
+      display: block;
+      margin: 0 auto 6px;
+    }
+
+    .tool-card span {
+      display: block;
+      font-size: 10px;
+      color: rgba(255,255,255,0.74);
+    }
+
+    .route {
+      position: absolute;
+      height: 4px;
+      background: repeating-linear-gradient(90deg, rgba(255,255,255,0.55) 0 8px, transparent 8px 15px);
+      transform-origin: left center;
+      opacity: 0.7;
+      z-index: 3;
+      animation: route-move 1.4s steps(4) infinite;
+    }
+
+    @keyframes route-move {
+      from { background-position: 0 0; }
+      to { background-position: 30px 0; }
+    }
+
+    .r1 { left: 225px; top: 235px; width: 250px; transform: rotate(8deg); }
+    .r2 { left: 530px; top: 260px; width: 235px; transform: rotate(-18deg); }
+    .r3 { left: 780px; top: 365px; width: 230px; transform: rotate(20deg); }
+
+    .callout {
+      position: absolute;
+      z-index: 15;
+      left: 38px;
+      top: 116px;
+      width: 300px;
+      padding: 14px;
+      border: 3px solid rgba(255,255,255,0.34);
+      border-radius: 18px;
+      background: rgba(6, 35, 58, 0.78);
+      box-shadow: 0 8px 0 rgba(0,0,0,0.16);
+    }
+
+    .callout h2 {
+      margin: 0 0 8px;
+      color: #fff7c7;
+      font-size: 14px;
+    }
+
+    .callout p {
+      margin: 0;
+      color: rgba(255,255,255,0.72);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .kbd {
+      color: #081e34;
+      background: #fff7c7;
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-weight: 700;
+    }
+
+    @media (max-width: 900px) {
+      body { overflow: auto; }
+      .desktop { width: 1200px; height: 780px; }
+      .page { place-items: start; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="desktop" aria-label="Session Cove game concept">
+      <div class="notch">macOS menu bar pet</div>
+      <section class="cove-window">
+        <div class="ocean"></div>
+
+        <header class="hud">
+          <div class="title">
+            <div class="title-mark">🌊</div>
+            <div>
+              <h1>Session Cove</h1>
+              <p>每个工作目录是一座岛；每个 Claude 会话是一只正在工作的章鱼</p>
+            </div>
+          </div>
+          <div class="stats">
+            <div class="chip">8 islands</div>
+            <div class="chip"><span style="color: var(--green)">●</span> 3 active</div>
+            <div class="chip"><span style="color: var(--yellow)">●</span> 4 recent</div>
+            <div class="chip"><span style="color: var(--gray)">●</span> 12 archived</div>
+          </div>
+        </header>
+
+        <aside class="callout">
+          <h2>核心产品形态</h2>
+          <p>打开顶部小浮窗，就像打开一张项目海图。最近工作的项目岛更大、更亮；活跃会话里的 Claude 章鱼在敲代码；归档会话则在岛上睡觉。点击岛进入项目基地，点击章鱼一键 <span class="kbd">resume</span>。</p>
+        </aside>
+
+        <div class="map">
+          <div class="route r1"></div>
+          <div class="route r2"></div>
+          <div class="route r3"></div>
+
+          <article class="island-node primary hot" style="left: 37%; top: 43%;">
+            <img class="island-sprite" src="../reference/island.png" alt="session-cove island" />
+            <img class="mascot" src="../reference/claude_working.png" alt="working Claude octopus" />
+            <div class="session-bubble"><span class="status-dot"></span>4</div>
+            <div class="label">session-cove</div>
+          </article>
+
+          <article class="island-node hot" style="left: 18%; top: 27%;">
+            <img class="island-sprite" src="../reference/island.png" alt="island" />
+            <img class="mascot" src="../reference/claude_working.png" alt="working Claude octopus" />
+            <div class="session-bubble"><span class="status-dot"></span>2</div>
+            <div class="label">accio-work</div>
+          </article>
+
+          <article class="island-node idle" style="left: 61%; top: 24%;">
+            <img class="island-sprite" src="../reference/island.png" alt="island" />
+            <img class="mascot" src="../reference/claude_working.png" alt="idle Claude octopus" />
+            <div class="session-bubble"><span class="status-dot"></span>3</div>
+            <div class="label">image-lab</div>
+          </article>
+
+          <article class="island-node sleepy" style="left: 80%; top: 38%;">
+            <img class="island-sprite" src="../reference/island.png" alt="island" />
+            <img class="mascot" src="../reference/claude_sleeping.png" alt="sleeping Claude octopus" />
+            <div class="session-bubble"><span class="status-dot"></span>5</div>
+            <div class="label">old-prototype</div>
+          </article>
+
+          <article class="island-node small idle" style="left: 24%; top: 69%;">
+            <img class="island-sprite" src="../reference/island.png" alt="island" />
+            <img class="mascot" src="../reference/claude_working.png" alt="idle Claude octopus" />
+            <div class="session-bubble"><span class="status-dot"></span>1</div>
+            <div class="label">docs</div>
+          </article>
+
+          <article class="island-node small sleepy" style="left: 51%; top: 72%;">
+            <img class="island-sprite" src="../reference/island.png" alt="island" />
+            <img class="mascot" src="../reference/claude_sleeping.png" alt="sleeping Claude octopus" />
+            <div class="session-bubble"><span class="status-dot"></span>7</div>
+            <div class="label">archive</div>
+          </article>
+
+          <article class="island-node small idle" style="left: 69%; top: 67%;">
+            <img class="island-sprite" src="../reference/island.png" alt="island" />
+            <img class="mascot" src="../reference/claude_working.png" alt="idle Claude octopus" />
+            <div class="session-bubble"><span class="status-dot"></span>2</div>
+            <div class="label">api-playground</div>
+          </article>
+
+          <article class="island-node small sleepy" style="left: 88%; top: 76%;">
+            <img class="island-sprite" src="../reference/island.png" alt="island" />
+            <img class="mascot" src="../reference/claude_sleeping.png" alt="sleeping Claude octopus" />
+            <div class="session-bubble"><span class="status-dot"></span>4</div>
+            <div class="label">+ more</div>
+          </article>
+        </div>
+
+        <nav class="bottom-dock" aria-label="agent dock">
+          <div class="tool-card">
+            <img src="../reference/claude_working.png" alt="Claude" />
+            <span>Claude Code</span>
+          </div>
+          <div class="tool-card">
+            <img src="../reference/codex.png" alt="Codex" />
+            <span>Codex later</span>
+          </div>
+          <div class="tool-card">
+            <img src="../reference/openclaw.png" alt="OpenClaw" />
+            <span>OpenClaw later</span>
+          </div>
+        </nav>
+
+        <aside class="side-panel">
+          <h2>点击岛后的项目基地</h2>
+          <div class="quest">
+            <img src="../reference/claude_working.png" alt="active session" />
+            <div>
+              <strong>Active session</strong>
+              <span>章鱼敲代码，终端闪烁；点击后 resume 到当前工作目录。</span>
+            </div>
+          </div>
+          <div class="quest">
+            <img src="../reference/claude_sleeping.png" alt="archived session" />
+            <div>
+              <strong>Archived session</strong>
+              <span>章鱼睡觉；保留上下文，但视觉上降低饱和度。</span>
+            </div>
+          </div>
+          <div class="quest">
+            <img src="../reference/island.png" alt="project island" />
+            <div>
+              <strong>Project island</strong>
+              <span>岛屿大小、亮度、装饰物表达项目活跃度和会话数量。</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

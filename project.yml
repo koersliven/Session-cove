@@ -1,0 +1,43 @@
+name: SessionCove
+options:
+  bundleIdPrefix: com.sessioncove
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.4"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: 1
+
+targets:
+  SessionCove:
+    type: application
+    platform: macOS
+    sources:
+      - SessionCove
+    info:
+      path: SessionCove/Info.plist
+      properties:
+        LSUIElement: true
+        NSAppleEventsUsageDescription: "Session Cove needs to send commands to your terminal to resume Claude Code sessions."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sessioncove.app
+        INFOPLIST_FILE: SessionCove/Info.plist
+        CODE_SIGN_ENTITLEMENTS: SessionCove/SessionCove.entitlements
+    entitlements:
+      path: SessionCove/SessionCove.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.automation.apple-events: true
+
+  SessionCoveTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - SessionCoveTests
+    dependencies:
+      - target: SessionCove

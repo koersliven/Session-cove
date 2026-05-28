@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swift build *)",
+      "Bash(./scripts/bundle.sh)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(mkdir -p /Users/lipu/Work/Session-cove)",
+      "Bash(git init *)",
+      "Bash(git remote *)"
+    ]
+  }
+}
