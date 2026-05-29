@@ -84,6 +84,14 @@ Session Cove reads session metadata from `~/.claude/projects/` (headers only —
 
 ## Installation
 
+### One-line Install
+
+```bash
+git clone https://github.com/koersliven/Session-cove.git && cd Session-cove && ./install.sh
+```
+
+This will build from source, create an `.app` bundle, and install to `/Applications`.
+
 ### Homebrew (coming soon)
 
 ```bash
@@ -92,14 +100,14 @@ brew install --cask session-cove
 
 ### Download
 
-Check [Releases](https://github.com/lipu/Session-cove/releases) for the latest `.dmg`.
+Check [Releases](https://github.com/koersliven/Session-cove/releases) for the latest `.dmg`.
 
 <a id="build-from-source"></a>
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/lipu/Session-cove.git
+git clone https://github.com/koersliven/Session-cove.git
 cd Session-cove
 swift build -c release
 ```
