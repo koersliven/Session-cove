@@ -154,10 +154,9 @@ enum ClaudePermissionHook {
         try? FileManager.default.removeItem(at: pendingDirectory.appendingPathComponent("\(request.id).json"))
 
         if decision == .alwaysAllow || decision == .allowSession {
-            saveToAllowlist(request: request, scope: decision == .alwaysAllow ? "always" : "session")
-        }
-        if decision == .allowSession, let sessionId = request.sessionId, !sessionId.isEmpty {
-            addTrustedSession(sessionId)
+            if let sessionId = request.sessionId, !sessionId.isEmpty {
+                addTrustedSession(sessionId)
+            }
         }
     }
 
@@ -178,58 +177,6 @@ enum ClaudePermissionHook {
         }
     }
 
-    private static func saveToAllowlist(request: HookPermissionRequest, scope: String) {
-        let matcher = deriveMatcherRule(toolName: request.toolName, matchValue: request.matchValue, scope: scope)
-        let rule: [String: Any] = [
-            "id": "rule_\(UUID().uuidString.prefix(12).lowercased())",
-            "enabled": true,
-            "scope": scope,
-            "toolName": request.toolName,
-            "matcher": matcher,
-            "projectPath": request.projectPath,
-            "sessionId": request.sessionId ?? "",
-            "createdAt": Date().timeIntervalSince1970,
-            "sourceRequest": [
-                "id": request.id,
-                "summary": request.summary
-            ]
-        ]
-
-        var allowlist = readAllowlist()
-        allowlist.append(rule)
-        writeAllowlist(allowlist)
-    }
-
-    private static func deriveMatcherRule(toolName: String, matchValue: String, scope: String) -> [String: String] {
-        if scope == "always" {
-            return ["kind": "toolInProject", "value": ""]
-        }
-        switch toolName {
-        case "Bash":
-            let command = matchValue.trimmingCharacters(in: .whitespaces)
-            let binary = command.split(separator: " ").first.map(String.init) ?? command
-            return ["kind": "binaryPrefix", "value": binary]
-        default:
-            return ["kind": "toolInProject", "value": ""]
-        }
-    }
-
-    private static func readAllowlist() -> [[String: Any]] {
-        guard let data = try? Data(contentsOf: allowlistURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rules = json["rules"] as? [[String: Any]] else {
-            return []
-        }
-        return rules
-    }
-
-    private static func writeAllowlist(_ rules: [[String: Any]]) {
-        let allowlist: [String: Any] = ["version": 1, "rules": rules]
-        guard let data = try? JSONSerialization.data(withJSONObject: allowlist, options: [.prettyPrinted, .sortedKeys]) else {
-            return
-        }
-        try? data.write(to: allowlistURL, options: .atomic)
-    }
 
     private static func updateClaudeSettings() throws {
         let settingsURL = FileManager.default.homeDirectoryForCurrentUser
@@ -461,6 +408,12 @@ enum ClaudePermissionHook {
 
             session_id = str(payload.get("session_id") or "")
             if session_id and session_id in load_trusted_sessions():
+                print_allow()
+                return 0
+
+            # Interactive tools (questions/selections) — let terminal handle them
+            tool_name = str(payload.get("tool_name") or "")
+            if tool_name in ("AskUserQuestion", "AskFollowupQuestion"):
                 print_allow()
                 return 0
 
