@@ -12,7 +12,7 @@ struct SessionResumer {
 
             DispatchQueue.main.async {
                 if let tty {
-                    focusITermSessionByTTY(tty: tty, fallbackSession: session)
+                    focusITermSessionByTTY(tty: tty)
                 } else {
                     launchNewSession(session: session)
                 }
@@ -108,14 +108,10 @@ struct SessionResumer {
         return p
     }
 
-    /// Try to focus the iTerm2 tab with matching TTY. If it fails, launch new session.
-    private static func focusITermSessionByTTY(tty: String, fallbackSession: SessionRecord) {
+    private static func focusITermSessionByTTY(tty: String) {
         let fullTTY = tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)"
         let shortTTY = tty.replacingOccurrences(of: "/dev/", with: "")
 
-        // Use the verified-working iTerm2 focus pattern:
-        // select theTab → select theSession → select resolvedWindow → activate
-        // Do NOT use "set frontmost of theWindow to true" (causes error -10000)
         let script = """
         tell application "iTerm2"
             repeat with theWindow in windows
@@ -123,11 +119,9 @@ struct SessionResumer {
                     repeat with theSession in sessions of theTab
                         set sessionTTY to tty of theSession
                         if sessionTTY is "\(fullTTY)" or sessionTTY is "\(shortTTY)" then
-                            set targetWindowId to (id of theWindow)
-                            set resolvedWindow to first window whose id is targetWindowId
                             select theTab
                             select theSession
-                            select resolvedWindow
+                            select (first window whose id is (id of theWindow))
                             activate
                             return "ok"
                         end if
@@ -146,45 +140,36 @@ struct SessionResumer {
             if value == "ok" {
                 print("[SessionResumer] Successfully focused iTerm2 session")
             } else {
-                print("[SessionResumer] Session not found in iTerm2 (returned: \(value)), launching new")
-                launchNewSession(session: fallbackSession)
+                print("[SessionResumer] TTY not found in iTerm2, bringing iTerm to front")
+                bringITermToFront()
             }
-        case .failure(let errorDesc):
-            print("[SessionResumer] Focus script failed: \(errorDesc), launching new session")
-            launchNewSession(session: fallbackSession)
+        case .failure:
+            print("[SessionResumer] Focus script failed (TCC?), bringing iTerm to front")
+            bringITermToFront()
         }
+    }
+
+    private static func bringITermToFront() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "iTerm"]
+        try? process.run()
+        process.waitUntilExit()
     }
 
     private static func launchNewSession(session: SessionRecord) {
         let command = "cd \(shellEscape(session.projectPath)) && claude --resume \(session.id)"
-        let escapedCommand = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-
-        let script = """
-        tell application "iTerm2"
-            activate
-            set newWindow to (create window with default profile)
-            tell current session of newWindow
-                write text "\(escapedCommand)"
-            end tell
-        end tell
-        """
-
         print("[SessionResumer] Launching new iTerm2 session for: \(session.id)")
-        let result = executeAppleScript(script)
-
-        switch result {
-        case .success:
-            print("[SessionResumer] Successfully launched new iTerm2 session")
-        case .failure(let errorDesc):
-            print("[SessionResumer] iTerm2 launch failed: \(errorDesc), trying Terminal.app")
-            openInTerminal(command: command)
-        }
+        launchInNewWindow(command: command)
     }
 
     static func launchNew(projectPath: String) {
         let command = "cd \(shellEscape(projectPath)) && claude"
+        print("[SessionResumer] Launching new Claude session in: \(projectPath)")
+        launchInNewWindow(command: command)
+    }
+
+    private static func launchInNewWindow(command: String) {
         let escapedCommand = command
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -202,9 +187,9 @@ struct SessionResumer {
         let result = executeAppleScript(script)
         switch result {
         case .success:
-            print("[SessionResumer] Launched new Claude session in: \(projectPath)")
+            print("[SessionResumer] Successfully launched new iTerm2 window")
         case .failure(let errorDesc):
-            print("[SessionResumer] iTerm2 new session failed: \(errorDesc), trying Terminal.app")
+            print("[SessionResumer] iTerm2 launch failed: \(errorDesc), trying Terminal.app")
             openInTerminal(command: command)
         }
     }
@@ -238,20 +223,31 @@ struct SessionResumer {
     }
 
     private static func executeAppleScript(_ source: String) -> ScriptResult {
-        guard let appleScript = NSAppleScript(source: source) else {
-            return .failure("Failed to create NSAppleScript instance")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", source]
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+        } catch {
+            return .failure("Failed to launch osascript: \(error)")
         }
 
-        var errorDict: NSDictionary?
-        let descriptor = appleScript.executeAndReturnError(&errorDict)
+        process.waitUntilExit()
+        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        if let errorDict {
-            let errorMessage = errorDict[NSAppleScript.errorMessage] as? String ?? "Unknown error"
-            let errorNumber = errorDict[NSAppleScript.errorNumber] as? Int ?? -1
-            return .failure("[\(errorNumber)] \(errorMessage)")
+        if process.terminationStatus != 0 {
+            let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8) ?? ""
+            return .failure("osascript exit \(process.terminationStatus): \(errStr)")
         }
 
-        return .success(descriptor.stringValue ?? "")
+        return .success(output)
     }
 
     private static func shellEscape(_ path: String) -> String {
