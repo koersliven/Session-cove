@@ -333,41 +333,36 @@ enum ClaudePermissionHook {
         PENDING = os.path.join(ROOT, "pending")
         RESPONSES = os.path.join(ROOT, "responses")
         ALLOWLIST_PATH = os.path.join(ROOT, "allowlist.json")
+        SESSION_TRUST_PATH = os.path.join(ROOT, "trusted_sessions.json")
         TIMEOUT_SECONDS = 24 * 60 * 60
 
         def ensure_dirs():
             os.makedirs(PENDING, exist_ok=True)
             os.makedirs(RESPONSES, exist_ok=True)
 
-        def stable_summary(payload):
-            tool_name = str(payload.get("tool_name") or "Tool")
-            tool_input = payload.get("tool_input") or {}
-            if isinstance(tool_input, dict):
-                for key in ("command", "file_path", "path", "url", "description"):
-                    value = tool_input.get(key)
-                    if value:
-                        return f"{tool_name}: {str(value)[:220]}"
-                try:
-                    return f"{tool_name}: {json.dumps(tool_input, ensure_ascii=False, sort_keys=True)[:220]}"
-                except Exception:
-                    pass
-            return f"{tool_name} is asking for permission."
+        # --- Output helpers (format matches Ping Island exactly) ---
 
-        def extract_match_value(payload):
-            tool_name = str(payload.get("tool_name") or "")
-            tool_input = payload.get("tool_input") or {}
-            if not isinstance(tool_input, dict):
-                return ""
-            if tool_name == "Bash":
-                return str(tool_input.get("command") or "")
-            if tool_name in ("Read", "Write", "Edit", "MultiEdit"):
-                return str(tool_input.get("file_path") or tool_input.get("path") or "")
-            return ""
+        def print_allow():
+            print(json.dumps({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}, ensure_ascii=False), flush=True)
 
-        def make_request_id(payload):
-            # Use a stable seed based on payload content to avoid flashing on reload
-            seed = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-            return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+        def output_decision(decision):
+            value = decision.get("decision")
+            if value == "deny":
+                obj = {"behavior": "deny", "message": "Denied in Session Cove."}
+            else:
+                obj = {"behavior": "allow"}
+            print(json.dumps({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":obj}}, ensure_ascii=False), flush=True)
+
+        # --- Fast-path checks ---
+
+        def load_trusted_sessions():
+            if not os.path.exists(SESSION_TRUST_PATH):
+                return set()
+            try:
+                with open(SESSION_TRUST_PATH, "r", encoding="utf-8") as f:
+                    return set(json.load(f).get("sessions", []))
+            except Exception:
+                return set()
 
         def match_allowlist(payload):
             if not os.path.exists(ALLOWLIST_PATH):
@@ -405,22 +400,16 @@ enum ClaudePermissionHook {
                 value = matcher.get("value", "")
 
                 if kind == "binaryPrefix":
-                    command = ""
-                    if isinstance(tool_input, dict):
-                        command = str(tool_input.get("command") or "")
+                    command = str(tool_input.get("command") or "") if isinstance(tool_input, dict) else ""
                     binary = command.strip().split()[0] if command.strip() else ""
                     if binary == value:
                         return True
                 elif kind == "exact":
-                    command = ""
-                    if isinstance(tool_input, dict):
-                        command = str(tool_input.get("command") or "")
+                    command = str(tool_input.get("command") or "") if isinstance(tool_input, dict) else ""
                     if command.strip() == value.strip():
                         return True
                 elif kind == "pathPrefix":
-                    file_path = ""
-                    if isinstance(tool_input, dict):
-                        file_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+                    file_path = str(tool_input.get("file_path") or tool_input.get("path") or "") if isinstance(tool_input, dict) else ""
                     if file_path and file_path.startswith(value):
                         return True
                 elif kind == "toolInProject":
@@ -428,33 +417,43 @@ enum ClaudePermissionHook {
 
             return False
 
-        SESSION_TRUST_PATH = os.path.join(ROOT, "trusted_sessions.json")
+        # --- Helpers ---
 
-        def load_trusted_sessions():
-            if not os.path.exists(SESSION_TRUST_PATH):
-                return set()
-            try:
-                with open(SESSION_TRUST_PATH, "r", encoding="utf-8") as f:
-                    return set(json.load(f).get("sessions", []))
-            except Exception:
-                return set()
+        def stable_summary(payload):
+            tool_name = str(payload.get("tool_name") or "Tool")
+            tool_input = payload.get("tool_input") or {}
+            if isinstance(tool_input, dict):
+                for key in ("command", "file_path", "path", "url", "description"):
+                    v = tool_input.get(key)
+                    if v:
+                        return f"{tool_name}: {str(v)[:220]}"
+                try:
+                    return f"{tool_name}: {json.dumps(tool_input, ensure_ascii=False, sort_keys=True)[:220]}"
+                except Exception:
+                    pass
+            return f"{tool_name} is asking for permission."
 
-        def print_allow():
-            result = {"hookSpecificOutput": {"decision": {"behavior": "allow"}}}
-            print(json.dumps(result, ensure_ascii=False), flush=True)
+        def extract_match_value(payload):
+            tool_name = str(payload.get("tool_name") or "")
+            tool_input = payload.get("tool_input") or {}
+            if not isinstance(tool_input, dict):
+                return ""
+            if tool_name == "Bash":
+                return str(tool_input.get("command") or "")
+            if tool_name in ("Read", "Write", "Edit", "MultiEdit"):
+                return str(tool_input.get("file_path") or tool_input.get("path") or "")
+            return ""
 
-        def output_decision(decision):
-            value = decision.get("decision")
-            if value == "deny":
-                decision_obj = {
-                    "behavior": "deny",
-                    "message": "Denied in Session Cove.",
-                    "interrupt": True
-                }
-            else:
-                decision_obj = {"behavior": "allow"}
-            result = {"hookSpecificOutput": {"decision": decision_obj}}
-            print(json.dumps(result, ensure_ascii=False), flush=True)
+        def make_request_id(payload):
+            stable = {
+                "tool_name": payload.get("tool_name"),
+                "tool_input": payload.get("tool_input"),
+                "cwd": payload.get("cwd"),
+            }
+            seed = json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str)
+            return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+
+        # --- Main ---
 
         def main():
             ensure_dirs()
@@ -482,7 +481,6 @@ enum ClaudePermissionHook {
             request_path = os.path.join(PENDING, f"{request_id}.json")
             response_path = os.path.join(RESPONSES, f"{request_id}.json")
 
-            # Remove stale response from previous run to avoid instant false-match
             try:
                 os.remove(response_path)
             except OSError:
@@ -490,23 +488,23 @@ enum ClaudePermissionHook {
 
             request = {
                 "id": request_id,
-                "sessionId": str(payload.get("session_id") or ""),
+                "sessionId": session_id,
                 "toolName": str(payload.get("tool_name") or "Tool"),
                 "projectPath": str(payload.get("cwd") or os.getcwd()),
                 "summary": stable_summary(payload),
                 "matchValue": extract_match_value(payload),
                 "receivedAt": time.time(),
             }
-            temp_path = request_path + ".tmp"
-            with open(temp_path, "w", encoding="utf-8") as handle:
-                json.dump(request, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            os.replace(temp_path, request_path)
+            tmp = request_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(request, f, ensure_ascii=False, indent=2, sort_keys=True)
+            os.replace(tmp, request_path)
 
             deadline = time.time() + TIMEOUT_SECONDS
             while time.time() < deadline:
                 if os.path.exists(response_path):
-                    with open(response_path, "r", encoding="utf-8") as handle:
-                        decision = json.load(handle)
+                    with open(response_path, "r", encoding="utf-8") as f:
+                        decision = json.load(f)
                     output_decision(decision)
                     try:
                         os.remove(request_path)

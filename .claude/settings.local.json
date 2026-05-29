@@ -51,7 +51,11 @@
       "Bash(rm -f ~/.session-cove/hooks/pending/*.json)",
       "Bash(rm -f ~/.session-cove/hooks/responses/*.json)",
       "Bash(ffmpeg -y -f lavfi -i sine=frequency=160:duration=1.2 -f lavfi -i sine=frequency=320:duration=1.2 -f lavfi -i anoisesrc=d=1.2:c=pink:a=0.08 -filter_complex '[0]volume=0.5[a];[1]volume=0.2[b];[2]lowpass=f=300[c];[a][b][c]amix=inputs=3:duration=first,lowpass=f=450,afade=t=in:st=0:d=0.3,afade=t=out:st=0.6:d=0.6,aformat=sample_fmts=s16:sample_rates=22050' -ac 1 /Users/lipu/Work/Session-cove/SessionCove/Resources/Sounds/water_splash.wav)",
-      "Bash(open /Users/lipu/Library/Developer/Xcode/DerivedData/Session-cove-csvwcdncfslxizftyorhrcrqncno/Build/Products/Debug/SessionCove)"
+      "Bash(open /Users/lipu/Library/Developer/Xcode/DerivedData/Session-cove-csvwcdncfslxizftyorhrcrqncno/Build/Products/Debug/SessionCove)",
+      "Bash(git commit *)",
+      "Read(//Users/lipu/.session-cove/hooks/responses/**)",
+      "Bash(open .build/debug/SessionCove.app)",
+      "Bash(.build/debug/SessionCove)"
     ]
   }
 }
