@@ -440,29 +440,21 @@ enum ClaudePermissionHook {
                 return set()
 
         def print_allow():
-            hook_output = {
-                "hookEventName": "PermissionRequest",
-                "decision": {"behavior": "allow"}
-            }
-            print(json.dumps({"hookSpecificOutput": hook_output}, ensure_ascii=False), flush=True)
+            result = {"hookSpecificOutput": {"decision": {"behavior": "allow"}}}
+            print(json.dumps(result, ensure_ascii=False), flush=True)
 
         def output_decision(decision):
             value = decision.get("decision")
-            hook_output = {
-                "hookEventName": "PermissionRequest",
-                "decision": {}
-            }
             if value == "deny":
-                hook_output["decision"] = {
+                decision_obj = {
                     "behavior": "deny",
                     "message": "Denied in Session Cove.",
                     "interrupt": True
                 }
-            elif value == "alwaysAllow":
-                hook_output["decision"] = {"behavior": "always"}
             else:
-                hook_output["decision"] = {"behavior": "allow"}
-            print(json.dumps({"hookSpecificOutput": hook_output}, ensure_ascii=False), flush=True)
+                decision_obj = {"behavior": "allow"}
+            result = {"hookSpecificOutput": {"decision": decision_obj}}
+            print(json.dumps(result, ensure_ascii=False), flush=True)
 
         def main():
             ensure_dirs()
@@ -489,6 +481,13 @@ enum ClaudePermissionHook {
             request_id = make_request_id(payload)
             request_path = os.path.join(PENDING, f"{request_id}.json")
             response_path = os.path.join(RESPONSES, f"{request_id}.json")
+
+            # Remove stale response from previous run to avoid instant false-match
+            try:
+                os.remove(response_path)
+            except OSError:
+                pass
+
             request = {
                 "id": request_id,
                 "sessionId": str(payload.get("session_id") or ""),
@@ -511,6 +510,10 @@ enum ClaudePermissionHook {
                     output_decision(decision)
                     try:
                         os.remove(request_path)
+                    except OSError:
+                        pass
+                    try:
+                        os.remove(response_path)
                     except OSError:
                         pass
                     return 0

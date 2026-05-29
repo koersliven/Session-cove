@@ -135,16 +135,15 @@ struct HarborMapOverviewView: View {
                 let pos = CGPoint(x: slot.x * size.width, y: slot.y * size.height)
                 let isSelected = island.id == viewModel.highlightedIsland?.id
 
-                MapProjectIslandNode(
+                StaggeredIslandNode(
                     island: island,
                     isSelected: isSelected,
                     hasPendingPermission: viewModel.pendingHookRequest?.projectPath == island.path,
-                    onTap: { viewModel.highlightIsland(island) }
+                    onTap: { viewModel.highlightIsland(island) },
+                    size: nodeSize(for: island, selected: isSelected),
+                    delay: Double(index) * 0.06
                 )
-                .frame(width: nodeSize(for: island, selected: isSelected).width,
-                       height: nodeSize(for: island, selected: isSelected).height)
                 .position(pos)
-                .opacity(revealOpacity(index: index))
             }
 
             Button {
@@ -170,10 +169,6 @@ struct HarborMapOverviewView: View {
             .position(x: 50, y: 20)
             .zIndex(100)
         }
-    }
-
-    private func revealOpacity(index: Int) -> Double {
-        min(1.0, 0.6 + Double(index) * 0.06)
     }
 
     // MARK: - Session Dock
@@ -265,6 +260,37 @@ struct HarborMapOverviewView: View {
         if viewModel.pendingHookRequest != nil { return .attention }
         if viewModel.activeSessions > 0 { return .working }
         return .idle
+    }
+}
+
+private struct StaggeredIslandNode: View {
+    let island: ProjectIsland
+    let isSelected: Bool
+    let hasPendingPermission: Bool
+    let onTap: () -> Void
+    let size: CGSize
+    let delay: Double
+
+    @State private var visible = false
+
+    var body: some View {
+        MapProjectIslandNode(
+            island: island,
+            isSelected: isSelected,
+            hasPendingPermission: hasPendingPermission,
+            onTap: onTap
+        )
+        .frame(width: size.width, height: size.height)
+        .opacity(visible ? 1 : 0)
+        .scaleEffect(visible ? 1 : 0.7)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    visible = true
+                }
+            }
+        }
+        .onDisappear { visible = false }
     }
 }
 
