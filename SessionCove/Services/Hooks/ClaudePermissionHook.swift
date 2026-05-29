@@ -179,7 +179,7 @@ enum ClaudePermissionHook {
     }
 
     private static func saveToAllowlist(request: HookPermissionRequest, scope: String) {
-        let matcher = deriveMatcherRule(toolName: request.toolName, matchValue: request.matchValue)
+        let matcher = deriveMatcherRule(toolName: request.toolName, matchValue: request.matchValue, scope: scope)
         let rule: [String: Any] = [
             "id": "rule_\(UUID().uuidString.prefix(12).lowercased())",
             "enabled": true,
@@ -200,28 +200,15 @@ enum ClaudePermissionHook {
         writeAllowlist(allowlist)
     }
 
-    private static func deriveMatcherRule(toolName: String, matchValue: String) -> [String: String] {
+    private static func deriveMatcherRule(toolName: String, matchValue: String, scope: String) -> [String: String] {
+        if scope == "always" {
+            return ["kind": "toolInProject", "value": ""]
+        }
         switch toolName {
         case "Bash":
             let command = matchValue.trimmingCharacters(in: .whitespaces)
             let binary = command.split(separator: " ").first.map(String.init) ?? command
-            let safeBinaries: Set<String> = [
-                "git", "ls", "cat", "grep", "find", "npm", "yarn", "swift", "python3",
-                "python", "head", "tail", "echo", "pwd", "mkdir", "which", "wc", "sort",
-                "diff", "xcodebuild", "open", "cp", "mv", "touch", "chmod", "man"
-            ]
-            if safeBinaries.contains(binary) {
-                return ["kind": "binaryPrefix", "value": binary]
-            }
-            return ["kind": "exact", "value": command]
-        case "Read", "Glob", "Grep", "LS":
-            return ["kind": "toolInProject", "value": ""]
-        case "Edit", "Write", "MultiEdit":
-            if !matchValue.isEmpty {
-                let dir = (matchValue as NSString).deletingLastPathComponent
-                return ["kind": "pathPrefix", "value": dir]
-            }
-            return ["kind": "toolInProject", "value": ""]
+            return ["kind": "binaryPrefix", "value": binary]
         default:
             return ["kind": "toolInProject", "value": ""]
         }
