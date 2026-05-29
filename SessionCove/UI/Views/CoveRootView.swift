@@ -6,7 +6,6 @@ struct CoveRootView: View {
 
     var body: some View {
         contentView
-            .animation(.spring(response: 0.35, dampingFraction: 0.86), value: viewModel.frameSize)
             .onChange(of: viewModel.frameSize) { _, newSize in
                 onFrameSizeChange?(newSize)
             }
