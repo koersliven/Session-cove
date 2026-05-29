@@ -100,10 +100,13 @@ struct HarborMapOverviewView: View {
         .frame(maxHeight: .infinity)
     }
 
+    private let slotOrder = [2, 0, 1, 3, 4, 5]
+
     private func mainMapContent(in size: CGSize) -> some View {
         ZStack {
             ForEach(Array(mainPageIslands.enumerated()), id: \.element.id) { index, island in
-                let slot = mainSlots[index % mainSlots.count]
+                let slotIndex = slotOrder[index % slotOrder.count]
+                let slot = mainSlots[slotIndex]
                 let pos = CGPoint(x: slot.x * size.width, y: slot.y * size.height)
                 let isSelected = island.id == viewModel.highlightedIsland?.id
 
@@ -120,7 +123,7 @@ struct HarborMapOverviewView: View {
 
             if hiddenCount > 0 {
                 moreReefButton(remaining: hiddenCount)
-                    .position(x: size.width * 0.88, y: size.height * 0.10)
+                    .position(x: size.width * 0.88, y: size.height * 0.22)
             }
         }
     }
@@ -181,7 +184,8 @@ struct HarborMapOverviewView: View {
             HarborSessionDock(
                 island: island,
                 onSessionTap: { viewModel.selectSession($0) },
-                onResume: { viewModel.resumeSession($0) }
+                onResume: { viewModel.resumeSession($0) },
+                onNewSession: { viewModel.newSession(for: island) }
             )
             .frame(height: 126)
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -208,23 +212,18 @@ struct HarborMapOverviewView: View {
         Button {
             mapPage = .extended
         } label: {
-            VStack(spacing: 3) {
-                PixelIslandSprite(mood: .archived)
-                    .frame(width: 60, height: 36)
-                    .opacity(0.6)
+            VStack(spacing: 4) {
+                MoreReefArrow()
+                    .frame(width: 42, height: 20)
+
                 Text("+\(remaining)")
-                    .font(.system(size: 9, weight: .black, design: .monospaced))
-                    .foregroundStyle(PixelPalette.foam.opacity(0.7))
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.7))
+
+                PixelIslandSprite(mood: .archived)
+                    .frame(width: 70, height: 42)
+                    .opacity(0.5)
             }
-            .padding(6)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(.white.opacity(0.04))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(PixelPalette.foam.opacity(0.15), lineWidth: 1)
-                    )
-            )
         }
         .buttonStyle(.plain)
     }
@@ -266,5 +265,36 @@ struct HarborMapOverviewView: View {
         if viewModel.pendingHookRequest != nil { return .attention }
         if viewModel.activeSessions > 0 { return .working }
         return .idle
+    }
+}
+
+struct MoreReefArrow: View {
+    @State private var drift: CGFloat = 0
+
+    private let spongeYellow = Color(red: 0.98, green: 0.85, blue: 0.15)
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("›")
+                .font(.system(size: 14, weight: .bold))
+            Text("MORE")
+                .font(.system(size: 9, weight: .black, design: .monospaced))
+        }
+        .fixedSize()
+        .foregroundStyle(Color(red: 0.25, green: 0.15, blue: 0.0))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            Capsule()
+                .fill(spongeYellow)
+                .overlay(Capsule().stroke(Color(red: 0.85, green: 0.70, blue: 0.05), lineWidth: 1.5))
+        )
+        .fixedSize()
+        .offset(x: drift)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                drift = 2
+            }
+        }
     }
 }

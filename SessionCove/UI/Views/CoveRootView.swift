@@ -21,6 +21,7 @@ struct CoveRootView: View {
 
         case .ping:
             pingView
+                .frame(width: 360, height: 230)
 
         case .expanded:
             expandedView
@@ -44,6 +45,10 @@ struct CoveRootView: View {
                 .padding(.bottom, 10)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(red: 0.03, green: 0.08, blue: 0.14))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
     }
 
     private var expandedView: some View {

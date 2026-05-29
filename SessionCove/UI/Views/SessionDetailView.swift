@@ -115,7 +115,7 @@ struct SessionDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 logHeader
 
-                logRow(icon: "ID", value: String(session.id.prefix(12)) + "...")
+                logRow(icon: "ID", value: session.id)
                 logRow(icon: "DIR", value: session.projectPath)
                 logRow(icon: "TIME", value: session.relativeTime)
                 if let branch = session.gitBranch {

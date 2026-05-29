@@ -19,7 +19,7 @@ enum SessionParser {
         guard let handle = FileHandle(forReadingAtPath: filePath) else { return nil }
         defer { handle.closeFile() }
 
-        let headerData = handle.readData(ofLength: 32768)
+        let headerData = handle.readData(ofLength: 8192)
         guard !headerData.isEmpty else { return nil }
 
         guard let headerString = String(data: headerData, encoding: .utf8) else { return nil }
@@ -34,7 +34,9 @@ enum SessionParser {
 
         let isoFormatter = ISO8601DateFormatter()
 
-        for line in headerLines.prefix(10) {
+        var headerAiTitle: String?
+
+        for line in headerLines.prefix(40) {
             guard let data = line.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 continue
@@ -46,7 +48,7 @@ enum SessionParser {
                 if let sid = json["sessionId"] as? String {
                     sessionId = sid
                 }
-            } else if type == "user" {
+            } else if type == "user" && firstMessage == nil {
                 cwd = json["cwd"] as? String
                 version = json["version"] as? String
                 gitBranch = json["gitBranch"] as? String
@@ -63,12 +65,15 @@ enum SessionParser {
                     firstMessage = content
                         .first(where: { ($0["type"] as? String) == "text" })?["text"] as? String
                 }
-
-                break
+            } else if type == "ai-title" {
+                if let title = json["aiTitle"] as? String, !title.isEmpty {
+                    headerAiTitle = title
+                    break
+                }
             }
         }
 
-        let aiTitle = extractSummary(handle: handle)
+        let aiTitle = headerAiTitle ?? extractSummary(handle: handle)
 
         let projectPath = cwd ?? decodeProjectPath(projectDirEncoded)
 

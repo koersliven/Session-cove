@@ -90,6 +90,7 @@ final class CoveViewModel: @unchecked Sendable {
     }
 
     func initialScan() async {
+        CoveSoundManager.shared.play(.oceanAmbient)
         await refresh()
         startWatching()
         startPeriodicRefresh()
@@ -98,9 +99,8 @@ final class CoveViewModel: @unchecked Sendable {
     @MainActor
     func refresh() async {
         var scanned = SessionScanner.scan()
-        let candidateIds = Set(scanned.flatMap { $0.sessions.map(\.id) })
-        let activeIds = ProcessDetector.shared.detectActiveSessionIds(candidateIds: candidateIds)
-        ProcessDetector.shared.applyStatuses(activeIds: activeIds, to: &scanned)
+        let activePaths = ProcessDetector.shared.detectActiveProjectPaths()
+        ProcessDetector.shared.applyStatuses(activeProjectPaths: activePaths, to: &scanned)
         self.islands = scanned
     }
 
@@ -109,8 +109,10 @@ final class CoveViewModel: @unchecked Sendable {
             return
         } else if isExpanded {
             closeToCompact()
+            CoveSoundManager.shared.play(.waterSplash)
         } else {
             presentHarbor(reason: .click)
+            CoveSoundManager.shared.play(.waterSplash)
         }
     }
 
@@ -159,7 +161,14 @@ final class CoveViewModel: @unchecked Sendable {
 
     func resumeSession(_ session: SessionRecord) {
         print("[CoveViewModel] resumeSession tapped: \(session.id)")
+        CoveSoundManager.shared.play(.treasureFound)
         SessionResumer.resume(session: session)
+    }
+
+    func newSession(for island: ProjectIsland) {
+        print("[CoveViewModel] newSession tapped for: \(island.path)")
+        CoveSoundManager.shared.play(.bubblePop)
+        SessionResumer.launchNew(projectPath: island.path)
     }
 
     func showMockHookRequest() {
@@ -168,6 +177,7 @@ final class CoveViewModel: @unchecked Sendable {
 
     func decideHookRequest(_ decision: HookApprovalDecision) {
         lastHookDecision = decision
+        CoveSoundManager.shared.play(.bubblePop)
         guard let request = pendingHookRequest else { return }
         do {
             try ClaudePermissionHook.resolve(request: request, decision: decision)
@@ -208,6 +218,11 @@ final class CoveViewModel: @unchecked Sendable {
     }
 
     private func updatePendingHookRequest(_ request: HookPermissionRequest?) {
+        // Skip identical updates — without this, every 500ms poll re-assigns the
+        // @Observable var and SwiftUI re-evaluates the body, which retriggers the
+        // frameSize spring animation and causes the ping card to visibly jitter.
+        if pendingHookRequest == request { return }
+
         let previousID = pendingHookRequest?.id
         pendingHookRequest = request
         guard let request else {
@@ -230,6 +245,7 @@ final class CoveViewModel: @unchecked Sendable {
             selectedSession = selectedIsland?.sessions.sorted { $0.lastModified > $1.lastModified }.first ?? selectedSession
             uiMode = .permissionInterruption
             openReason = .notification
+            CoveSoundManager.shared.play(.sonarPing)
         }
     }
 
@@ -254,7 +270,7 @@ final class CoveViewModel: @unchecked Sendable {
     private func startPeriodicRefresh() {
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3))
+                try? await Task.sleep(for: .seconds(15))
                 await self?.refresh()
             }
         }

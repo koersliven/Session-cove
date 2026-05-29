@@ -24,7 +24,7 @@ struct SessionResumer {
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-eo", "tty=,args="]
+        process.arguments = ["-axo", "pid=,tty=,comm=,args="]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 
@@ -40,22 +40,72 @@ struct SessionResumer {
         process.waitUntilExit()
         print("[SessionResumer] ps exited with status: \(process.terminationStatus)")
 
-        guard process.terminationStatus == 0 else { return nil }
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        guard process.terminationStatus == 0,
+              let output = String(data: data, encoding: .utf8) else { return nil }
+
+        // Phase 2 candidates: bare `claude` processes (no sessionId in args).
+        // Resolve them by cwd against session.projectPath.
+        var claudePidTty: [(pid: Int32, tty: String)] = []
 
         for line in output.components(separatedBy: "\n") {
-            guard line.contains("claude") else { continue }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            guard parts.count >= 4, let pid = Int32(parts[0]) else { continue }
 
-            // Match by session ID in args
-            if trimmed.contains(session.id) {
-                let tty = String(trimmed.prefix(while: { !$0.isWhitespace }))
-                if !tty.isEmpty && tty != "??" {
-                    return tty
-                }
+            let tty = parts[1]
+            guard tty != "??" else { continue }
+
+            let commName = (parts[2] as NSString).lastPathComponent
+            let argsJoined = parts[3..<parts.count].joined(separator: " ")
+
+            // Phase 1: args literally contain the session id (covers `claude --resume <id>`).
+            if argsJoined.contains(session.id) {
+                return tty
+            }
+
+            if commName == "claude" {
+                claudePidTty.append((pid, tty))
+            }
+        }
+
+        // Phase 2: bare claude process whose cwd matches session.projectPath.
+        let targetCwd = normalizePath(session.projectPath)
+        for (pid, tty) in claudePidTty {
+            if let cwd = lsofCwd(pid: pid), normalizePath(cwd) == targetCwd {
+                print("[SessionResumer] Matched bare claude pid=\(pid) tty=\(tty) by cwd=\(cwd)")
+                return tty
             }
         }
         return nil
+    }
+
+    private static func lsofCwd(pid: Int32) -> String? {
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-a", "-p", String(pid), "-d", "cwd", "-F", "n"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do { try process.run() } catch { return nil }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        for line in output.components(separatedBy: "\n") where line.hasPrefix("n") {
+            return String(line.dropFirst())
+        }
+        return nil
+    }
+
+    private static func normalizePath(_ path: String) -> String {
+        var p = path
+        while p.count > 1 && p.hasSuffix("/") {
+            p = String(p.dropLast())
+        }
+        return p
     }
 
     /// Try to focus the iTerm2 tab with matching TTY. If it fails, launch new session.
@@ -129,6 +179,32 @@ struct SessionResumer {
             print("[SessionResumer] Successfully launched new iTerm2 session")
         case .failure(let errorDesc):
             print("[SessionResumer] iTerm2 launch failed: \(errorDesc), trying Terminal.app")
+            openInTerminal(command: command)
+        }
+    }
+
+    static func launchNew(projectPath: String) {
+        let command = "cd \(shellEscape(projectPath)) && claude"
+        let escapedCommand = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        let script = """
+        tell application "iTerm2"
+            activate
+            set newWindow to (create window with default profile)
+            tell current session of newWindow
+                write text "\(escapedCommand)"
+            end tell
+        end tell
+        """
+
+        let result = executeAppleScript(script)
+        switch result {
+        case .success:
+            print("[SessionResumer] Launched new Claude session in: \(projectPath)")
+        case .failure(let errorDesc):
+            print("[SessionResumer] iTerm2 new session failed: \(errorDesc), trying Terminal.app")
             openInTerminal(command: command)
         }
     }

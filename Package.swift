@@ -14,7 +14,8 @@ let package = Package(
                 .copy("Resources/claude_sleeping.png"),
                 .copy("Resources/claude_attention.png"),
                 .copy("Resources/claude_idle.png"),
-                .copy("Resources/island.png")
+                .copy("Resources/island.png"),
+                .copy("Resources/Sounds")
             ],
             swiftSettings: [
                 .unsafeFlags(["-strict-concurrency=targeted"])

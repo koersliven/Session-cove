@@ -13,21 +13,27 @@ struct PermissionPingCard: View {
                     Text(request.toolName.uppercased())
                         .font(.system(size: 12, weight: .black, design: .monospaced))
                         .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+
                     Text(request.summary)
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.64))
                         .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .layoutPriority(1)
 
-                Spacer()
+                Spacer(minLength: 8)
             }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 pingButton(.deny, style: .quiet)
-                Spacer(minLength: 0)
-                pingButton(.allowSession, style: .blue)
-                pingButton(.alwaysAllow, style: .blue)
-                pingButton(.allow, style: .primary)
+                Spacer()
+                HStack(spacing: 6) {
+                    pingButton(.allowSession, style: .blue)
+                    pingButton(.alwaysAllow, style: .blue)
+                    pingButton(.allow, style: .primary)
+                }
             }
         }
         .padding(10)
@@ -48,8 +54,9 @@ struct PermissionPingCard: View {
             Text(decision.title)
                 .font(.system(size: 10, weight: .black, design: .monospaced))
                 .foregroundStyle(style.foreground)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
                 .background(
                     Capsule()
                         .fill(style.background)

@@ -29,17 +29,21 @@ enum HookApprovalDecision: String, CaseIterable, Identifiable, Sendable {
 
 struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
     let id: String
+    let sessionId: String?
     let toolName: String
     let projectPath: String
     let summary: String
+    let matchValue: String
     let receivedAt: Date
 
     static func mock(for island: ProjectIsland?) -> HookPermissionRequest {
         HookPermissionRequest(
             id: UUID().uuidString,
+            sessionId: nil,
             toolName: "Bash",
             projectPath: island?.path ?? "~/Work/session-cove",
             summary: "claude wants to run a model/tool request in this project island.",
+            matchValue: "git status",
             receivedAt: Date()
         )
     }

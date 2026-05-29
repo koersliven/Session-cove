@@ -4,6 +4,7 @@ struct HarborSessionDock: View {
     let island: ProjectIsland
     let onSessionTap: (SessionRecord) -> Void
     let onResume: (SessionRecord) -> Void
+    var onNewSession: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -30,6 +31,26 @@ struct HarborSessionDock: View {
                 .foregroundStyle(.white.opacity(0.4))
 
             Spacer()
+
+            if let onNewSession {
+                Button(action: onNewSession) {
+                    HStack(spacing: 3) {
+                        Text("+")
+                            .font(.system(size: 11, weight: .black))
+                        Text("NEW")
+                            .font(.system(size: 8, weight: .black, design: .monospaced))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color(red: 0.10, green: 0.45, blue: 0.30))
+                            .overlay(Capsule().stroke(PixelPalette.grass.opacity(0.5), lineWidth: 1))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -124,19 +145,15 @@ struct HarborSessionDockCard: View {
                     .onTapGesture(perform: onTap)
                 Button(action: onResume) {
                     HStack(spacing: 3) {
-                        Text(session.status == .active ? "▶" : "▶")
+                        Text("▶")
                             .font(.system(size: 9))
-                        Text(session.status == .active ? "OPEN" : "RUN")
+                        Text(buttonLabel)
                             .font(.system(size: 9, weight: .black, design: .monospaced))
                     }
                     .foregroundStyle(.white)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(
-                        Capsule().fill(session.status == .active
-                            ? Color(red: 0.10, green: 0.45, blue: 0.30)
-                            : Color(red: 0.12, green: 0.34, blue: 0.52))
-                    )
+                    .background(Capsule().fill(buttonColor))
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
@@ -153,6 +170,22 @@ struct HarborSessionDockCard: View {
                 )
         )
         .onHover { isHovered = $0 }
+    }
+
+    private var buttonLabel: String {
+        switch session.status {
+        case .active: "OPEN"
+        case .recentlyIdle: "RESUME"
+        case .archived: "RUN"
+        }
+    }
+
+    private var buttonColor: Color {
+        switch session.status {
+        case .active: Color(red: 0.10, green: 0.45, blue: 0.30)
+        case .recentlyIdle: Color(red: 0.40, green: 0.30, blue: 0.12)
+        case .archived: Color(red: 0.12, green: 0.34, blue: 0.52)
+        }
     }
 }
 
