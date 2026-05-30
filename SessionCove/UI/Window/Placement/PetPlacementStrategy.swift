@@ -75,7 +75,7 @@ final class PetPlacementStrategy {
                 x: screenFrame.midX - newSize.width / 2,
                 y: screenFrame.maxY - newSize.height
             )
-            return (NSRect(origin: origin, size: newSize), nil)
+            return (ceilFrame(NSRect(origin: origin, size: newSize)), nil)
 
         case .ping:
             let anchor = petAnchor ?? currentPanelOrigin
@@ -94,7 +94,7 @@ final class PetPlacementStrategy {
                 NSRect(x: originX, y: originY, width: newSize.width, height: newSize.height),
                 screen: screenFrame
             )
-            return (frame, direction)
+            return (ceilFrame(frame), direction)
 
         case .expanded:
             let anchor = petAnchor ?? NSPoint(
@@ -109,7 +109,7 @@ final class PetPlacementStrategy {
                 NSRect(x: originX, y: originY, width: newSize.width, height: newSize.height),
                 screen: screenFrame
             )
-            return (frame, nil)
+            return (ceilFrame(frame), nil)
 
         case .compact:
             let anchor = petAnchor ?? NSPoint(
@@ -123,8 +123,21 @@ final class PetPlacementStrategy {
                 NSRect(x: originX, y: originY, width: newSize.width, height: newSize.height),
                 screen: screenFrame
             )
-            return (frame, nil)
+            return (ceilFrame(frame), nil)
         }
+    }
+
+    /// Snap an NSRect to integer pixel boundaries using `ceil`, defending against
+    /// fractional pixels (e.g. 412.5, 783.7333) that 4K externals + DPI swaps can
+    /// emit. Half-pixel origins cause edge shimmer; ceil overshoots by < 1pt
+    /// which is below visual threshold and stays consistent across redraws.
+    private func ceilFrame(_ rect: NSRect) -> NSRect {
+        NSRect(
+            x: ceil(rect.origin.x),
+            y: ceil(rect.origin.y),
+            width: ceil(rect.size.width),
+            height: ceil(rect.size.height)
+        )
     }
 
     private func size(for frameSize: CoveFrameSize) -> NSSize {

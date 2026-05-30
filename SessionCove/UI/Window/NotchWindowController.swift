@@ -12,6 +12,12 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
 
     private let hoverDetector = NotchHoverDetector()
     private var outsideClickMonitor: Any?
+    /// Direct activeSpaceDidChange listener for "Mission Control / Space switch
+    /// → instant close". FullscreenAppDetector also subscribes to the same
+    /// notification but only updates `isFullscreen`; we need a separate hook to
+    /// hard-snap the notch closed before the system's space-transition snapshot
+    /// captures a half-animated panel. PR 6.T edge case 1.
+    private var spaceChangeObserver: NSObjectProtocol?
 
     /// Records the mode we should restore to when a permission popping
     /// interruption ends. PR 4 declares this; PR 5/6 wires the full
@@ -22,7 +28,11 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         self.viewModel = viewModel
         super.init()
 
-        guard let screen = NSScreen.builtin ?? NSScreen.main else { return }
+        // Pick the screen the user is actively looking at (mouse pointer wins),
+        // falling back to key-window screen → builtin → any. PR 6.T edge case 2:
+        // multi-monitor users on the external display shouldn't see the notch
+        // glued to the laptop's internal screen.
+        guard let screen = currentScreen() else { return }
 
         let panelFrame = NotchPlacementStrategy.panelFrame(for: screen)
         let p = CovePanel(contentRect: panelFrame)
@@ -90,14 +100,56 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         fullscreenToken = FullscreenAppDetector.shared.subscribe { [weak self] isFullscreen in
             MainActor.assumeIsolated {
                 guard let self, let panel = self.panel else { return }
+                let activeScreen = self.currentScreen() ?? NSScreen.main
+                let hasPhysicalNotch = (activeScreen?.notchMetrics != nil)
+
                 if isFullscreen {
-                    // PR 5 keeps it simple: alpha 0 fully hides the notch panel
-                    // when a fullscreen app is active. Spec mentions a 8pt
-                    // hover-trigger strip on non-notch displays — that's
-                    // earmarked for PR 6 / hover-zone tuning.
-                    panel.animator().alphaValue = 0
+                    if hasPhysicalNotch {
+                        // Physical notch: alpha-hide the SwiftUI notch graphic so
+                        // the system's native notch + fullscreen menu auto-show
+                        // takes over. PR 6.T edge case 4 (notch path).
+                        panel.animator().alphaValue = 0
+                    } else {
+                        // No physical notch: slide the panel up so the closed
+                        // notch graphic exits the screen, leaving an 8pt hover
+                        // strip at the top edge for the user to trigger reveal.
+                        // closedNotchHeight (32) mirrors `closedHoverZone.hotH`
+                        // — keep them in sync. PR 6.T edge case 4 (no-notch path).
+                        let closedNotchHeight: CGFloat = 32
+                        let slideUp = closedNotchHeight + 12 - 8
+                        var f = panel.frame
+                        f.origin.y += slideUp
+                        panel.animator().setFrame(f, display: true)
+                        panel.animator().alphaValue = 1
+                    }
                 } else {
+                    // Exit fullscreen: restore alpha and reapply the current
+                    // status so the panel frame snaps back to the canonical
+                    // position for that NotchStatus.
                     panel.animator().alphaValue = 1
+                    self.applyNotchStatus(self.viewModel.notchStatus)
+                }
+            }
+        }
+
+        // Mission Control / Space switch: snap closed instantly. PR 6.T edge
+        // case 1. FullscreenAppDetector listens to the same notification but
+        // only updates `isFullscreen`; we need our own observer to force a
+        // close before the system captures a space-transition snapshot of a
+        // half-animated panel. Hard-set status (no SwiftUI animation) — during
+        // the space transition the panel content stops rendering, so a slow
+        // animation just freezes the last frame.
+        spaceChangeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.viewModel.notchStatus != .closed {
+                    self.hoverDetector.cancelPending()
+                    self.hoverDetector.isAnimating = true
+                    self.viewModel.notchStatus = .closed
                 }
             }
         }
@@ -124,6 +176,10 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         if let token = fullscreenToken {
             FullscreenAppDetector.shared.unsubscribe(token)
             fullscreenToken = nil
+        }
+        if let obs = spaceChangeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+            spaceChangeObserver = nil
         }
         hoverDetector.cancelPending()
         panel?.orderOut(nil)
@@ -156,9 +212,28 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
     }
 
     private func repositionForScreenChange() {
-        // Re-apply the current status so panel frame and hover zone follow
-        // the new screen geometry (lid open/close, monitor change, etc.).
-        applyNotchStatus(viewModel.notchStatus)
+        // 220ms easeOut transparency cross-fade around the reposition. Without
+        // it the panel "flies" across the desktop on lid-open / monitor swap.
+        // Split into two 110ms halves: fade-out → re-apply geometry → fade-in.
+        // PR 6.T edge case 3.
+        guard let panel = panel else { return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.110
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.applyNotchStatus(self.viewModel.notchStatus)
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.110
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    ctx.allowsImplicitAnimation = true
+                    self.panel?.animator().alphaValue = 1
+                }
+            }
+        }
     }
 
     // MARK: - Status machine
@@ -179,7 +254,7 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
     }
 
     func applyNotchStatus(_ status: NotchStatus) {
-        guard let panel, let screen = NSScreen.builtin ?? NSScreen.main else { return }
+        guard let panel, let screen = currentScreen() else { return }
 
         hoverDetector.isAnimating = true
 
@@ -234,28 +309,42 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         case .closed:
             // PR 3 baseline: full-screen-width × 750 panel anchored top so the
             // notch graphic itself sits flush with the menu bar.
-            return NotchPlacementStrategy.panelFrame(for: screen)
+            // panelFrame(for:) already integer-ceils internally, but route
+            // through ceilFrame for symmetry with the other cases.
+            return ceilFrame(NotchPlacementStrategy.panelFrame(for: screen))
         case .peeking:
             let w: CGFloat = 480
             let h: CGFloat = 220
-            return NSRect(
+            return ceilFrame(NSRect(
                 x: frame.midX - w / 2,
                 y: frame.maxY - h,
                 width: w,
                 height: h
-            )
+            ))
         case .opened, .popping:
             // Spec mentions opened height as `min(720, measured)`; measuring
             // requires a layout pass. PR 4 uses a fixed 480; PR 5 can refine.
             let w: CGFloat = 600
             let h: CGFloat = 480
-            return NSRect(
+            return ceilFrame(NSRect(
                 x: frame.midX - w / 2,
                 y: frame.maxY - h,
                 width: w,
                 height: h
-            )
+            ))
         }
+    }
+
+    /// Snap an NSRect to integer pixels. Avoids half-pixel shimmer on Retina /
+    /// fractional-DPI external displays where `frame.midX - w / 2` can return
+    /// a fractional origin. PR 6.T edge case 5.
+    private func ceilFrame(_ rect: NSRect) -> NSRect {
+        NSRect(
+            x: ceil(rect.origin.x),
+            y: ceil(rect.origin.y),
+            width: ceil(rect.size.width),
+            height: ceil(rect.size.height)
+        )
     }
 
     /// Hot zone for closed state: the area directly under the physical notch
@@ -273,6 +362,19 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         )
     }
 
+    /// Screen the user is currently looking at: prefer the screen containing
+    /// the mouse pointer, then fall back to NSScreen.main (key window screen),
+    /// then builtin, then any screen. PR 6.T edge case 2 — replaces the
+    /// "always builtin" assumption from PR 5 so multi-monitor users see the
+    /// notch on whichever display they're actively interacting with.
+    private func currentScreen() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        if let s = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) {
+            return s
+        }
+        return NSScreen.main ?? NSScreen.builtin ?? NSScreen.screens.first
+    }
+
     deinit {
         // ScreenObserver and NSEvent monitor removal are safe on any thread,
         // but reading our @MainActor stored properties requires isolation.
@@ -285,6 +387,9 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
             }
             if let token = fullscreenToken {
                 FullscreenAppDetector.shared.unsubscribe(token)
+            }
+            if let obs = spaceChangeObserver {
+                NSWorkspace.shared.notificationCenter.removeObserver(obs)
             }
         }
     }
