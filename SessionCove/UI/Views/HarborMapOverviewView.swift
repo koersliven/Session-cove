@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HarborMapOverviewView: View {
     @Bindable var viewModel: CoveViewModel
+    var showsHeader: Bool = true
     @State private var mapPage: MapPage = .main
 
     private enum MapPage {
@@ -31,7 +32,7 @@ struct HarborMapOverviewView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            mapHeader
+            if showsHeader { mapHeader }
             mapArea
             sessionDock
         }

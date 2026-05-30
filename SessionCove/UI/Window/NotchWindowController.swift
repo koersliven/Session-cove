@@ -12,6 +12,7 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
 
     private let hoverDetector = NotchHoverDetector()
     private var outsideClickMonitor: Any?
+    private var rightClickMonitor: Any?
     /// Direct activeSpaceDidChange listener for "Mission Control / Space switch
     /// → instant close". FullscreenAppDetector also subscribes to the same
     /// notification but only updates `isFullscreen`; we need a separate hook to
@@ -84,6 +85,23 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
                         self.viewModel.notchStatus = .closed
                     }
                 }
+            }
+        }
+
+        // Right-click anywhere on the notch panel pops the StatusMenu so users
+        // can switch back to .pet mode (or hit Settings / Quit) without having
+        // to find the menu bar icon. Closed state is `ignoresMouseEvents=true`
+        // so a panel-local view monitor would never see the event — the click
+        // routes past the panel to whatever is behind. A global monitor catches
+        // the event regardless and we hit-test against `panel.frame` ourselves.
+        rightClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] _ in
+            if let event = NSApp.currentEvent, MouseEventReplay.isReplayed(event) { return }
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel else { return }
+                let loc = NSEvent.mouseLocation
+                guard panel.frame.contains(loc) else { return }
+                let menu = StatusMenu.build(target: nil)
+                menu.popUp(positioning: nil, at: loc, in: nil)
             }
         }
 
@@ -168,6 +186,10 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         if let monitor = outsideClickMonitor {
             NSEvent.removeMonitor(monitor)
             outsideClickMonitor = nil
+        }
+        if let monitor = rightClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            rightClickMonitor = nil
         }
         if let token = screenObserverToken {
             ScreenObserver.shared.unsubscribe(token)
@@ -383,6 +405,9 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
                 ScreenObserver.shared.unsubscribe(token)
             }
             if let monitor = outsideClickMonitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            if let monitor = rightClickMonitor {
                 NSEvent.removeMonitor(monitor)
             }
             if let token = fullscreenToken {

@@ -268,25 +268,7 @@ private struct OpenedNotchContent: View {
     }
 
     private var bodyArea: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("港湾地图（完整态待 PR 5 接入 ProjectIsland）")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.5))
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(rankedIslands) { island in
-                        IslandSummaryRow(island: island, compact: false)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.black.opacity(0.92))
+        HarborMapOverviewView(viewModel: viewModel, showsHeader: false)
     }
 
     private var octopusHead: some View {
@@ -304,19 +286,6 @@ private struct OpenedNotchContent: View {
             }
         }
         .frame(width: 22, height: 22)
-    }
-
-    private var rankedIslands: [ProjectIsland] {
-        viewModel.islands
-            .sorted { lhs, rhs in
-                if lhs.activeCount != rhs.activeCount { return lhs.activeCount > rhs.activeCount }
-                if lhs.recentCount != rhs.recentCount { return lhs.recentCount > rhs.recentCount }
-                let lt = lhs.sessions.first?.lastModified ?? .distantPast
-                let rt = rhs.sessions.first?.lastModified ?? .distantPast
-                return lt > rt
-            }
-            .prefix(8)
-            .map { $0 }
     }
 }
 
