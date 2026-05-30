@@ -85,44 +85,37 @@ enum ClaudePermissionHook {
     }
 
     static func matchesAllowlist(request: HookPermissionRequest) -> Bool {
-        guard let data = try? Data(contentsOf: allowlistURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rules = json["rules"] as? [[String: Any]] else {
-            return false
-        }
+        // AllowlistStore is @MainActor; all callers (`pendingRequests` via
+        // hookPolling Task @MainActor, `resolve` via SwiftUI button action)
+        // already run on the main thread. assumeIsolated is the cheap path.
+        let rules = MainActor.assumeIsolated { AllowlistStore.shared.rules }
 
         for rule in rules {
-            let enabled = rule["enabled"] as? Bool ?? true
-            guard enabled else { continue }
-            guard let toolName = rule["toolName"] as? String, toolName == request.toolName else { continue }
+            guard rule.enabled else { continue }
+            guard rule.toolName == request.toolName else { continue }
 
-            let scope = rule["scope"] as? String ?? "always"
-            if scope == "session" {
-                let ruleSession = rule["sessionId"] as? String ?? ""
+            if rule.scope == "session" {
+                let ruleSession = rule.sessionId ?? ""
                 guard !ruleSession.isEmpty, ruleSession == (request.sessionId ?? "") else { continue }
             }
 
-            let ruleProject = rule["projectPath"] as? String ?? ""
+            let ruleProject = rule.projectPath
             if !ruleProject.isEmpty && !request.projectPath.isEmpty {
                 guard request.projectPath.hasPrefix(ruleProject) else { continue }
             }
 
-            guard let matcher = rule["matcher"] as? [String: String],
-                  let kind = matcher["kind"],
-                  let value = matcher["value"] else { continue }
-
-            switch kind {
+            switch rule.matcher.kind {
             case "binaryPrefix":
                 let trimmed = request.matchValue.trimmingCharacters(in: .whitespaces)
                 let binary = trimmed.split(separator: " ").first.map(String.init) ?? ""
-                if binary == value { return true }
+                if binary == rule.matcher.value { return true }
             case "exact":
                 if request.matchValue.trimmingCharacters(in: .whitespaces)
-                    == value.trimmingCharacters(in: .whitespaces) {
+                    == rule.matcher.value.trimmingCharacters(in: .whitespaces) {
                     return true
                 }
             case "pathPrefix":
-                if !request.matchValue.isEmpty, request.matchValue.hasPrefix(value) {
+                if !request.matchValue.isEmpty, request.matchValue.hasPrefix(rule.matcher.value) {
                     return true
                 }
             case "toolInProject":
@@ -149,8 +142,6 @@ enum ClaudePermissionHook {
         try? FileManager.default.removeItem(at: pendingDirectory.appendingPathComponent("\(request.id).json"))
     }
 
-    private static let allowlistURL = hookDirectory.appendingPathComponent("allowlist.json")
-
     static func resolve(request: HookPermissionRequest, decision: HookApprovalDecision) throws {
         try FileManager.default.createDirectory(at: responseDirectory, withIntermediateDirectories: true)
         let response: [String: Any] = [
@@ -173,53 +164,37 @@ enum ClaudePermissionHook {
     }
 
     private static func addAllowlistRule(for request: HookPermissionRequest) {
-        var rules: [[String: Any]] = []
-        if let data = try? Data(contentsOf: allowlistURL),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let existing = json["rules"] as? [[String: Any]] {
-            rules = existing
-        }
-
-        let matcher: [String: String]
+        let matcher: AllowlistMatcher
         if request.toolName == "Bash" {
             let binary = request.matchValue.trimmingCharacters(in: .whitespaces)
                 .split(separator: " ").first.map(String.init) ?? ""
             if binary.isEmpty {
-                matcher = ["kind": "toolInProject", "value": ""]
+                matcher = AllowlistMatcher(kind: "toolInProject", value: "")
             } else {
-                matcher = ["kind": "binaryPrefix", "value": binary]
+                matcher = AllowlistMatcher(kind: "binaryPrefix", value: binary)
             }
         } else if ["Read", "Write", "Edit", "MultiEdit"].contains(request.toolName) {
             if !request.projectPath.isEmpty {
-                matcher = ["kind": "pathPrefix", "value": request.projectPath]
+                matcher = AllowlistMatcher(kind: "pathPrefix", value: request.projectPath)
             } else {
-                matcher = ["kind": "toolInProject", "value": ""]
+                matcher = AllowlistMatcher(kind: "toolInProject", value: "")
             }
         } else {
-            matcher = ["kind": "toolInProject", "value": ""]
+            matcher = AllowlistMatcher(kind: "toolInProject", value: "")
         }
 
-        let isDuplicate = rules.contains { rule in
-            guard let t = rule["toolName"] as? String, t == request.toolName,
-                  let m = rule["matcher"] as? [String: String], m == matcher else { return false }
-            let p = rule["projectPath"] as? String ?? ""
-            return p == request.projectPath
-        }
-        guard !isDuplicate else { return }
+        let rule = AllowlistRule(
+            toolName: request.toolName,
+            projectPath: request.projectPath,
+            scope: "always",
+            enabled: true,
+            matcher: matcher
+        )
 
-        let newRule: [String: Any] = [
-            "toolName": request.toolName,
-            "projectPath": request.projectPath,
-            "scope": "always",
-            "enabled": true,
-            "matcher": matcher,
-            "createdAt": Date().timeIntervalSince1970
-        ]
-        rules.append(newRule)
-
-        let payload: [String: Any] = ["rules": rules]
-        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: allowlistURL, options: .atomic)
+        // AllowlistStore.add is idempotent — duplicate (toolName, matcher,
+        // projectPath) tuples are dropped on the store side.
+        MainActor.assumeIsolated {
+            AllowlistStore.shared.add(rule)
         }
     }
 

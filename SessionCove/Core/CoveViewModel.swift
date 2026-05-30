@@ -43,6 +43,12 @@ final class CoveViewModel: @unchecked Sendable {
     private var hookPollTask: Task<Void, Never>?
     private var collapseTimer: Task<Void, Never>?
 
+    /// Invoked when the user finishes dragging the pet mascot.
+    /// Window controller injects this on init to persist the new anchor without
+    /// the view model needing a direct reference to AppKit window machinery.
+    @ObservationIgnored
+    var onPetDragEnded: (() -> Void)?
+
     var isExpanded: Bool {
         uiMode != .pet && uiMode != .compact && uiMode != .permissionInterruption
     }
@@ -133,6 +139,7 @@ final class CoveViewModel: @unchecked Sendable {
 
     func petDragEnded() {
         // Notifies window controller to persist anchor (called from PetMascotView)
+        onPetDragEnded?()
     }
 
     func closeToPet() {

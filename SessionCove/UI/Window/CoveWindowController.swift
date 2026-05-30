@@ -1,6 +1,27 @@
 import AppKit
 import SwiftUI
 
+/// Pet anchor geometry helper.
+///
+/// Persistence is owned by `CoveSettings.shared.petAnchorPoint` (PR 1.B).
+/// What remains here is the pure screen-geometry clamp — keeping it on the
+/// controller side because `CoveSettings` shouldn't depend on AppKit
+/// `NSScreen.visibleFrame`.
+enum PetAnchorGeometry {
+    /// Clamp the anchor so the full pet rect stays within `visibleFrame`.
+    /// If the visible frame is smaller than the pet, the anchor is pinned to the origin.
+    static func clamp(_ anchor: NSPoint, petSize: NSSize, into visibleFrame: NSRect) -> NSPoint {
+        var p = anchor
+        let maxX = visibleFrame.maxX - petSize.width
+        let maxY = visibleFrame.maxY - petSize.height
+        if p.x < visibleFrame.minX { p.x = visibleFrame.minX }
+        if p.x > maxX { p.x = maxX }
+        if p.y < visibleFrame.minY { p.y = visibleFrame.minY }
+        if p.y > maxY { p.y = maxY }
+        return p
+    }
+}
+
 /// A hosting view that only accepts clicks within configurable hit rects.
 /// Points outside those rects pass through to views/windows behind.
 final class PassThroughHostingView<Content: View>: NSHostingView<Content> {
@@ -42,18 +63,37 @@ final class CoveWindowController: NSWindowController, NSWindowDelegate {
 
         let initialSize = Self.petSize
         let screenFrame = screen.visibleFrame
-        let contentRect = NSRect(
+
+        // Restore persisted anchor if any; clamp into visible frame so a stale
+        // off-screen position (after monitor change / resolution change) snaps back.
+        let savedAnchor = CoveSettings.shared.petAnchorPoint
+        let restoredAnchor = savedAnchor.map {
+            PetAnchorGeometry.clamp($0, petSize: initialSize, into: screenFrame)
+        }
+        let initialOrigin = restoredAnchor ?? NSPoint(
             x: screenFrame.midX - initialSize.width / 2,
-            y: screenFrame.maxY - initialSize.height,
-            width: initialSize.width,
-            height: initialSize.height
+            y: screenFrame.maxY - initialSize.height
         )
+        let contentRect = NSRect(origin: initialOrigin, size: initialSize)
 
         let panel = CovePanel(contentRect: contentRect)
         panel.ignoresMouseEvents = false
 
         super.init(window: panel)
         panel.delegate = self
+
+        // Seed in-memory anchor from restored value so updatePanelFrame's pet-case
+        // honors it on first call (otherwise it would fall back to top-center).
+        self.petAnchor = restoredAnchor
+
+        // Drag-end callback: model -> controller without coupling.
+        // PetInteractionView.mouseUp runs on the main thread, so MainActor.assumeIsolated
+        // gives us a synchronous, allocation-free hop to MainActor isolation.
+        viewModel.onPetDragEnded = { [weak self] in
+            MainActor.assumeIsolated {
+                self?.savePetAnchor()
+            }
+        }
 
         let rootView = CoveRootView(
             viewModel: viewModel,
@@ -178,7 +218,9 @@ final class CoveWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func savePetAnchor() {
-        petAnchor = covePanel?.frame.origin
+        guard let origin = covePanel?.frame.origin else { return }
+        petAnchor = origin
+        CoveSettings.shared.petAnchorPoint = origin
     }
 
     private func setupGlobalClickMonitor() {

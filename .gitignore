@@ -36,3 +36,5 @@ default.profraw
 # Private planning & reference docs
 memory-plan/
 .claude/
+implementation-notes.md
+implementation-notes.html
