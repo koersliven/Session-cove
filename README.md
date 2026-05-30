@@ -129,6 +129,42 @@ open ".build/release/Session Cove.app"
 - Claude Code installed
 - iTerm2 (for session resume)
 
+## Setup & Permissions
+
+First launch requires two one-time approvals:
+
+### 1. Gatekeeper (unsigned app)
+
+Since Session Cove is not notarized by Apple, macOS will block the first launch:
+
+1. Open **System Settings → Privacy & Security**
+2. Scroll down to find _"Session Cove" was blocked from use because it is not from an identified developer_
+3. Click **Open Anyway**
+
+Or via terminal:
+```bash
+xattr -cr /Applications/Session\ Cove.app
+```
+
+### 2. Automation (iTerm2 control)
+
+When you first resume or open a session, macOS will ask:
+
+> _"Session Cove" wants to control "iTerm2"_
+
+Click **OK**. This allows Session Cove to open new terminal windows and send `claude --resume` commands.
+
+You can manage this later in **System Settings → Privacy & Security → Automation**.
+
+### 3. Hook Installation (automatic)
+
+On first launch, Session Cove automatically:
+- Creates `~/.session-cove/hooks/` for the permission bridge
+- Adds a `PermissionRequest` hook entry to `~/.claude/settings.json`
+- A backup of your original settings is saved as `settings.session-cove-backup.json`
+
+No manual action needed — just restart any running Claude Code session to pick up the hook.
+
 ## Acknowledgments
 
 Inspired by [Ping Island](https://github.com/erha19/ping-island) — the original AI coding session monitor for macOS notch. Session Cove takes a different approach: focusing on **session history management** and a **multi-project harbor map** rather than single-session attention tracking.
