@@ -6,6 +6,7 @@ enum PixelMascotState: Sendable {
     case idle
     case sleeping
     case attention
+    case dragged
 }
 
 enum PixelPalette {
@@ -387,6 +388,22 @@ struct PixelOctopusSprite: View {
                 "................",
                 "................"
             ]
+        case .dragged:
+            [
+                "................",
+                ".....BBBBBB.....",
+                "....BHHHHHHB....",
+                "...BOOOOOOOOB...",
+                "...BEOOOOOEOB...",
+                "...BOEOOOEOB....",
+                "....OOWOOO......",
+                "...DOOOOOOD.....",
+                "..DODODODOD.....",
+                "................",
+                "................",
+                "................",
+                "................"
+            ]
         }
     }
 
@@ -400,6 +417,7 @@ struct PixelOctopusSprite: View {
                 case "H": PixelPalette.headphone
                 case "B": PixelPalette.headphoneDark
                 case "E": PixelPalette.ink.opacity(0.84)
+                case "W": PixelPalette.ink.opacity(0.7)
                 case "M": PixelPalette.ink
                 case "S": PixelPalette.screen
                 case "-": PixelPalette.ink.opacity(0.76)

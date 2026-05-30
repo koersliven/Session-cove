@@ -14,13 +14,17 @@ struct CoveRootView: View {
     @ViewBuilder
     private var contentView: some View {
         switch viewModel.frameSize {
+        case .pet:
+            PetMascotView(viewModel: viewModel)
+                .frame(width: 48, height: 48)
+
         case .compact:
             CompactBarView(viewModel: viewModel)
                 .frame(width: 300, height: 50)
 
         case .ping:
             pingView
-                .frame(width: 360, height: 230)
+                .frame(width: 388, height: 72)
 
         case .expanded:
             expandedView
@@ -30,18 +34,13 @@ struct CoveRootView: View {
     }
 
     private var pingView: some View {
-        VStack(spacing: 0) {
-            CompactBarView(viewModel: viewModel)
-                .frame(height: 50)
-                .padding(.horizontal, 30)
-
-            if let request = viewModel.pendingHookRequest {
-                PermissionPingCard(request: request) { decision in
-                    viewModel.decideHookRequest(decision)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 10)
+        HStack(spacing: 0) {
+            if viewModel.pingExpandDirection == .trailing {
+                petInPing
+                pingCardContent
+            } else {
+                pingCardContent
+                petInPing
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -50,10 +49,27 @@ struct CoveRootView: View {
         .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
     }
 
+    private var petInPing: some View {
+        CoveMascotView(state: .attention, scale: .pet, grounded: false)
+            .frame(width: 48, height: 48)
+            .padding(.horizontal, 4)
+    }
+
+    @ViewBuilder
+    private var pingCardContent: some View {
+        if let request = viewModel.pendingHookRequest {
+            PermissionPingCard(request: request) { decision in
+                viewModel.decideHookRequest(decision)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+    }
+
     private var expandedView: some View {
         VStack(spacing: 0) {
             switch viewModel.uiMode {
-            case .compact, .permissionInterruption:
+            case .pet, .compact, .permissionInterruption:
                 CompactBarView(viewModel: viewModel)
             case .harborOverview:
                 HarborMapOverviewView(viewModel: viewModel)

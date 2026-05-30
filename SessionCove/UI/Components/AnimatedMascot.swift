@@ -30,6 +30,8 @@ struct AnimatedMascot: View {
             return CGFloat(sin(time * .pi * 0.8) * 0.6)
         case .attention:
             return CGFloat(sin(time * .pi * 7) * 2.0)
+        case .dragged:
+            return 0
         }
     }
 }

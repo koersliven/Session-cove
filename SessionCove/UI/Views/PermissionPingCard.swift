@@ -5,38 +5,29 @@ struct PermissionPingCard: View {
     let onDecision: (HookApprovalDecision) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                CoveMascotView(state: .attention, scale: .ping)
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(request.toolName.uppercased())
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .foregroundStyle(.white)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(request.toolName.uppercased())
-                        .font(.system(size: 12, weight: .black, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Text(request.summary)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.64))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .layoutPriority(1)
-
-                Spacer(minLength: 8)
+                Text(request.summary)
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.64))
+                    .lineLimit(1)
             }
+            .frame(maxWidth: 120, alignment: .leading)
 
-            HStack(spacing: 8) {
+            Spacer(minLength: 4)
+
+            HStack(spacing: 5) {
                 pingButton(.deny, style: .quiet)
-                Spacer()
-                HStack(spacing: 6) {
-                    pingButton(.allowSession, style: .blue)
-                    pingButton(.alwaysAllow, style: .blue)
-                    pingButton(.allow, style: .primary)
-                }
+                pingButton(.alwaysAllow, style: .primary)
+                pingButton(.allow, style: .blue)
             }
         }
-        .padding(10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(red: 0.04, green: 0.10, blue: 0.16))
@@ -52,10 +43,12 @@ struct PermissionPingCard: View {
             onDecision(decision)
         } label: {
             Text(decision.title)
-                .font(.system(size: 10, weight: .black, design: .monospaced))
+                .font(.system(size: style == .primary ? 11 : 10, weight: .black, design: .monospaced))
                 .foregroundStyle(style.foreground)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, style == .primary ? 14 : 10)
+                .padding(.vertical, style == .primary ? 7 : 6)
                 .contentShape(Rectangle())
                 .background(
                     Capsule()

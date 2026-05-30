@@ -1,6 +1,7 @@
 import SwiftUI
 
 enum MascotScale: Sendable {
+    case pet
     case compact
     case ping
     case shelf
@@ -10,6 +11,7 @@ enum MascotScale: Sendable {
 
     var size: CGSize {
         switch self {
+        case .pet: CGSize(width: 48, height: 48)
         case .compact: CGSize(width: 42, height: 38)
         case .ping: CGSize(width: 38, height: 34)
         case .shelf: CGSize(width: 50, height: 46)
@@ -57,6 +59,7 @@ struct CoveMascotView: View {
         case .sleeping: MascotImage.sleeping
         case .attention: MascotImage.attention
         case .idle: MascotImage.idle
+        case .dragged: MascotImage.wink
         }
     }
 }

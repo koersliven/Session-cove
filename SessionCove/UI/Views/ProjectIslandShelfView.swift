@@ -116,7 +116,7 @@ struct ProjectIslandShelfView: View {
         case .working: PixelPalette.grass
         case .attention: PixelPalette.alert
         case .idle: PixelPalette.sand
-        case .sleeping: .clear
+        case .sleeping, .dragged: .clear
         }
     }
 

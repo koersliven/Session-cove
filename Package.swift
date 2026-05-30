@@ -14,6 +14,7 @@ let package = Package(
                 .copy("Resources/claude_sleeping.png"),
                 .copy("Resources/claude_attention.png"),
                 .copy("Resources/claude_idle.png"),
+                .copy("Resources/claude_wink.png"),
                 .copy("Resources/island.png"),
                 .copy("Resources/Sounds")
             ],

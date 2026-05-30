@@ -39,6 +39,15 @@ enum ClaudePermissionHook {
         var visible: [HookPermissionRequest] = []
 
         for url in files where url.pathExtension == "json" {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let modified = attrs[.modificationDate] as? Date else {
+                continue
+            }
+            if Date().timeIntervalSince(modified) > 60 {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+
             guard let data = try? Data(contentsOf: url),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let id = object["id"] as? String,
@@ -153,10 +162,64 @@ enum ClaudePermissionHook {
         try data.write(to: responseDirectory.appendingPathComponent("\(request.id).json"), options: .atomic)
         try? FileManager.default.removeItem(at: pendingDirectory.appendingPathComponent("\(request.id).json"))
 
+        if decision == .alwaysAllow {
+            addAllowlistRule(for: request)
+        }
         if decision == .alwaysAllow || decision == .allowSession {
             if let sessionId = request.sessionId, !sessionId.isEmpty {
                 addTrustedSession(sessionId)
             }
+        }
+    }
+
+    private static func addAllowlistRule(for request: HookPermissionRequest) {
+        var rules: [[String: Any]] = []
+        if let data = try? Data(contentsOf: allowlistURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let existing = json["rules"] as? [[String: Any]] {
+            rules = existing
+        }
+
+        let matcher: [String: String]
+        if request.toolName == "Bash" {
+            let binary = request.matchValue.trimmingCharacters(in: .whitespaces)
+                .split(separator: " ").first.map(String.init) ?? ""
+            if binary.isEmpty {
+                matcher = ["kind": "toolInProject", "value": ""]
+            } else {
+                matcher = ["kind": "binaryPrefix", "value": binary]
+            }
+        } else if ["Read", "Write", "Edit", "MultiEdit"].contains(request.toolName) {
+            if !request.projectPath.isEmpty {
+                matcher = ["kind": "pathPrefix", "value": request.projectPath]
+            } else {
+                matcher = ["kind": "toolInProject", "value": ""]
+            }
+        } else {
+            matcher = ["kind": "toolInProject", "value": ""]
+        }
+
+        let isDuplicate = rules.contains { rule in
+            guard let t = rule["toolName"] as? String, t == request.toolName,
+                  let m = rule["matcher"] as? [String: String], m == matcher else { return false }
+            let p = rule["projectPath"] as? String ?? ""
+            return p == request.projectPath
+        }
+        guard !isDuplicate else { return }
+
+        let newRule: [String: Any] = [
+            "toolName": request.toolName,
+            "projectPath": request.projectPath,
+            "scope": "always",
+            "enabled": true,
+            "matcher": matcher,
+            "createdAt": Date().timeIntervalSince1970
+        ]
+        rules.append(newRule)
+
+        let payload: [String: Any] = ["rules": rules]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: allowlistURL, options: .atomic)
         }
     }
 
@@ -455,7 +518,11 @@ enum ClaudePermissionHook {
                     except OSError:
                         pass
                     return 0
+                if not os.path.exists(request_path):
+                    print_allow()
+                    return 0
                 time.sleep(0.2)
+            print_allow()
             return 0
 
         if __name__ == "__main__":

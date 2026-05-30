@@ -26,6 +26,7 @@ final class CoveWindowController: NSWindowController, NSWindowDelegate {
     private let viewModel: CoveViewModel
     private var globalClickMonitor: Any?
     private var hostingView: PassThroughHostingView<CoveRootView>?
+    private var petAnchor: NSPoint?
 
     var covePanel: CovePanel? {
         window as? CovePanel
@@ -39,7 +40,7 @@ final class CoveWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        let initialSize = Self.size(for: .compact)
+        let initialSize = Self.petSize
         let screenFrame = screen.visibleFrame
         let contentRect = NSRect(
             x: screenFrame.midX - initialSize.width / 2,
@@ -80,36 +81,113 @@ final class CoveWindowController: NSWindowController, NSWindowDelegate {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private static func size(for frameSize: CoveFrameSize) -> NSSize {
+    private static let petSize = NSSize(width: 48, height: 48)
+    private static let pingCardWidth: CGFloat = 340
+    private static let pingHeight: CGFloat = 72
+
+    private func size(for frameSize: CoveFrameSize) -> NSSize {
         switch frameSize {
+        case .pet:     Self.petSize
         case .compact: NSSize(width: 300, height: 50)
-        case .ping:    NSSize(width: 360, height: 230)
+        case .ping:    NSSize(width: Self.petSize.width + Self.pingCardWidth, height: Self.pingHeight)
         case .expanded: NSSize(width: 520, height: 480)
         }
     }
+
+    private var previousFrameSize: CoveFrameSize = .pet
 
     private func updatePanelFrame(for frameSize: CoveFrameSize) {
         guard let panel = covePanel,
               let screen = panel.screen ?? NSScreen.screens.first else { return }
         let screenFrame = screen.visibleFrame
-        let newSize = Self.size(for: frameSize)
-        let newFrame = NSRect(
-            x: screenFrame.midX - newSize.width / 2,
-            y: screenFrame.maxY - newSize.height,
-            width: newSize.width,
-            height: newSize.height
-        )
+
+        if previousFrameSize == .pet && frameSize != .pet {
+            petAnchor = panel.frame.origin
+        }
+        previousFrameSize = frameSize
+
+        let newSize = size(for: frameSize)
+        let newFrame: NSRect
+
+        switch frameSize {
+        case .pet:
+            let origin = petAnchor ?? NSPoint(
+                x: screenFrame.midX - newSize.width / 2,
+                y: screenFrame.maxY - newSize.height
+            )
+            newFrame = NSRect(origin: origin, size: newSize)
+
+        case .ping:
+            let anchor = petAnchor ?? panel.frame.origin
+            let petCenterX = anchor.x + Self.petSize.width / 2
+            let expandRight = petCenterX < screenFrame.midX
+            viewModel.pingExpandDirection = expandRight ? .trailing : .leading
+
+            let originX: CGFloat
+            if expandRight {
+                originX = anchor.x
+            } else {
+                originX = anchor.x + Self.petSize.width - newSize.width
+            }
+            let originY = anchor.y + Self.petSize.height / 2 - newSize.height / 2
+            newFrame = clampToScreen(
+                NSRect(x: originX, y: originY, width: newSize.width, height: newSize.height),
+                screen: screenFrame
+            )
+
+        case .expanded:
+            let anchor = petAnchor ?? NSPoint(
+                x: screenFrame.midX - Self.petSize.width / 2,
+                y: screenFrame.maxY - Self.petSize.height
+            )
+            let petCenterX = anchor.x + Self.petSize.width / 2
+            let petCenterY = anchor.y + Self.petSize.height / 2
+            let originX = petCenterX - newSize.width / 2
+            let originY = petCenterY - newSize.height + 48
+            newFrame = clampToScreen(
+                NSRect(x: originX, y: originY, width: newSize.width, height: newSize.height),
+                screen: screenFrame
+            )
+
+        case .compact:
+            let anchor = petAnchor ?? NSPoint(
+                x: screenFrame.midX - Self.petSize.width / 2,
+                y: screenFrame.maxY - Self.petSize.height
+            )
+            let petCenterX = anchor.x + Self.petSize.width / 2
+            let originX = petCenterX - newSize.width / 2
+            let originY = anchor.y + Self.petSize.height / 2 - newSize.height / 2
+            newFrame = clampToScreen(
+                NSRect(x: originX, y: originY, width: newSize.width, height: newSize.height),
+                screen: screenFrame
+            )
+        }
+
         panel.setFrame(newFrame, display: true, animate: false)
         hostingView?.frame = NSRect(origin: .zero, size: newSize)
         panel.contentView?.frame = NSRect(origin: .zero, size: newSize)
-        print("[CoveWindow] frameSize=\(frameSize) target=\(newFrame.size) actual=\(panel.frame.size) hosting=\(hostingView?.frame.size ?? .zero)")
+    }
+
+    private func clampToScreen(_ rect: NSRect, screen: NSRect) -> NSRect {
+        var r = rect
+        if r.maxX > screen.maxX { r.origin.x = screen.maxX - r.width }
+        if r.minX < screen.minX { r.origin.x = screen.minX }
+        if r.maxY > screen.maxY { r.origin.y = screen.maxY - r.height }
+        if r.minY < screen.minY { r.origin.y = screen.minY }
+        return r
+    }
+
+    func savePetAnchor() {
+        petAnchor = covePanel?.frame.origin
     }
 
     private func setupGlobalClickMonitor() {
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.viewModel.isExpanded else { return }
-                self.viewModel.closeToCompact()
+                guard let self else { return }
+                if self.viewModel.isExpanded || self.viewModel.uiMode == .compact {
+                    self.viewModel.closeToPet()
+                }
             }
         }
     }

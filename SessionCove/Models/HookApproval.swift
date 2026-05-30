@@ -11,7 +11,7 @@ enum HookApprovalDecision: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .deny: "Deny"
-        case .allow: "Allow"
+        case .allow: "Yes"
         case .allowSession: "Session"
         case .alwaysAllow: "Always"
         }

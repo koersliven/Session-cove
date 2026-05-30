@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 
 enum CoveUIMode: Equatable, Sendable {
+    case pet
     case compact
     case harborOverview
     case projectIsland
@@ -10,6 +11,7 @@ enum CoveUIMode: Equatable, Sendable {
 }
 
 enum CoveFrameSize: Equatable, Sendable {
+    case pet          // 48x48
     case compact      // 300x50
     case ping         // 360x220
     case expanded     // 520x480
@@ -26,7 +28,7 @@ enum CoveOpenReason: Equatable, Sendable {
 @Observable
 final class CoveViewModel: @unchecked Sendable {
     var islands: [ProjectIsland] = []
-    var uiMode: CoveUIMode = .compact
+    var uiMode: CoveUIMode = .pet
     var openReason: CoveOpenReason = .unknown
     var selectedIsland: ProjectIsland?
     var selectedSession: SessionRecord?
@@ -39,13 +41,15 @@ final class CoveViewModel: @unchecked Sendable {
     private var watcher: SessionWatcher?
     private var refreshTask: Task<Void, Never>?
     private var hookPollTask: Task<Void, Never>?
+    private var collapseTimer: Task<Void, Never>?
 
     var isExpanded: Bool {
-        uiMode != .compact && uiMode != .permissionInterruption
+        uiMode != .pet && uiMode != .compact && uiMode != .permissionInterruption
     }
 
     var frameSize: CoveFrameSize {
         switch uiMode {
+        case .pet: .pet
         case .compact: .compact
         case .permissionInterruption: .ping
         default: .expanded
@@ -104,30 +108,65 @@ final class CoveViewModel: @unchecked Sendable {
         self.islands = scanned
     }
 
+    var pingExpandDirection: HorizontalEdge = .trailing
+
     func toggle() {
         if uiMode == .permissionInterruption {
             return
-        } else if isExpanded {
-            closeToCompact()
-            CoveSoundManager.shared.play(.waterSplash)
-        } else {
+        } else if uiMode == .pet && pendingHookRequest != nil {
+            modeBeforeInterruption = .pet
+            uiMode = .permissionInterruption
+            openReason = .click
+            CoveSoundManager.shared.play(.sonarPing)
+        } else if uiMode == .pet {
             presentHarbor(reason: .click)
+            CoveSoundManager.shared.play(.waterSplash)
+        } else if isExpanded {
+            closeToPet()
+            CoveSoundManager.shared.play(.waterSplash)
+        } else if uiMode == .compact {
+            presentHarbor(reason: .click)
+            cancelCollapseTimer()
             CoveSoundManager.shared.play(.waterSplash)
         }
     }
 
-    func closeToCompact() {
-        uiMode = .compact
+    func petDragEnded() {
+        // Notifies window controller to persist anchor (called from PetMascotView)
+    }
+
+    func closeToPet() {
+        collapseTimer?.cancel()
+        uiMode = .pet
         openReason = .unknown
         selectedIsland = nil
         selectedSession = nil
     }
 
+    func closeToCompact() {
+        closeToPet()
+    }
+
     func presentHarbor(reason: CoveOpenReason) {
+        cancelCollapseTimer()
         uiMode = .harborOverview
         openReason = reason
         selectedIsland = nil
         selectedSession = nil
+    }
+
+    private func resetCollapseTimer() {
+        collapseTimer?.cancel()
+        collapseTimer = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.closeToPet()
+        }
+    }
+
+    private func cancelCollapseTimer() {
+        collapseTimer?.cancel()
+        collapseTimer = nil
     }
 
     var highlightedIsland: ProjectIsland? {
@@ -181,10 +220,10 @@ final class CoveViewModel: @unchecked Sendable {
         guard let request = pendingHookRequest else { return }
         do {
             try ClaudePermissionHook.resolve(request: request, decision: decision)
-            updatePendingHookRequest(ClaudePermissionHook.pendingRequests().first)
         } catch {
             hookIntegrationError = error.localizedDescription
         }
+        updatePendingHookRequest(nil)
     }
 
     @MainActor
@@ -205,7 +244,7 @@ final class CoveViewModel: @unchecked Sendable {
 
     func back() {
         if uiMode == .permissionInterruption {
-            closeToCompact()
+            closeToPet()
         } else if selectedSession != nil {
             selectedSession = nil
             uiMode = selectedIsland == nil ? .harborOverview : .projectIsland
@@ -213,14 +252,11 @@ final class CoveViewModel: @unchecked Sendable {
             selectedIsland = nil
             uiMode = .harborOverview
         } else {
-            closeToCompact()
+            closeToPet()
         }
     }
 
     private func updatePendingHookRequest(_ request: HookPermissionRequest?) {
-        // Skip identical updates — without this, every 500ms poll re-assigns the
-        // @Observable var and SwiftUI re-evaluates the body, which retriggers the
-        // frameSize spring animation and causes the ping card to visibly jitter.
         if pendingHookRequest == request { return }
 
         let previousID = pendingHookRequest?.id
@@ -231,13 +267,17 @@ final class CoveViewModel: @unchecked Sendable {
                     uiMode = restored
                     modeBeforeInterruption = nil
                 } else {
-                    uiMode = .compact
+                    uiMode = .pet
                 }
             }
             return
         }
 
         if previousID != request.id || uiMode == .compact {
+            if uiMode == .pet {
+                CoveSoundManager.shared.play(.sonarPing)
+                return
+            }
             if uiMode != .permissionInterruption {
                 modeBeforeInterruption = uiMode
             }
