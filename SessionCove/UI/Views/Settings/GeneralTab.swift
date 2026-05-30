@@ -2,6 +2,12 @@ import SwiftUI
 
 struct GeneralTab: View {
     @EnvironmentObject var settings: CoveSettings
+    /// Subscribes the view to the singleton via Swift Observation. `@State`
+    /// gives the property a stable storage slot across re-renders; reading
+    /// `transitionState.isTransitioning` inside `body` registers the view
+    /// for change tracking, so the Picker re-renders when WindowManager
+    /// flips the flag.
+    @State private var transitionState = ModeTransitionState.shared
 
     var body: some View {
         Form {
@@ -22,6 +28,7 @@ struct GeneralTab: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
+                    .disabled(transitionState.isTransitioning)
                 }
                 .padding(.vertical, 4)
             }

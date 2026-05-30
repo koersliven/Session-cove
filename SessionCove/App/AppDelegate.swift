@@ -13,6 +13,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowManager?.setup()
 
         setupStatusItem()
+
+        // Wake hook: forces notch back to closed and gates hover for ~400ms so
+        // a mouse parked over the hot zone during sleep doesn't snap-peek the
+        // moment the display turns on. Wake/sleep notifications must come from
+        // NSWorkspace.shared.notificationCenter — they are NOT posted on the
+        // default NotificationCenter.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.windowManager?.handleWake()
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

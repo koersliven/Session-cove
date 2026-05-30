@@ -7,6 +7,7 @@ final class PetWindowController: NSWindowController, NSWindowDelegate, CoveModeW
     private var globalClickMonitor: Any?
     private var hostingView: PassThroughHostingView<CoveRootView>?
     private let strategy = PetPlacementStrategy()
+    private var isClosing = false
 
     var panel: CovePanel? {
         window as? CovePanel
@@ -136,6 +137,20 @@ final class PetWindowController: NSWindowController, NSWindowDelegate, CoveModeW
                 }
             }
         }
+    }
+
+    /// Idempotent teardown. Multiple sources can race to close the controller
+    /// (displayMode swap + global escape monitor + system events); the guard
+    /// prevents double removeMonitor / orderOut.
+    override func close() {
+        guard !isClosing else { return }
+        isClosing = true
+        if let monitor = globalClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalClickMonitor = nil
+        }
+        viewModel.onPetDragEnded = nil
+        super.close()
     }
 
     deinit {

@@ -123,6 +123,11 @@ final class CoveViewModel: @unchecked Sendable {
 
     var pingExpandDirection: HorizontalEdge = .trailing
     var notchStatus: NotchStatus = .closed
+    /// Mirror of `ModeTransitionState.shared.isTransitioning` for non-SwiftUI
+    /// consumers that already hold a viewModel reference (e.g. NotchHoverDetector
+    /// gates hover events while a mode swap is animating). WindowManager keeps
+    /// both flags in sync.
+    var modeTransitionInProgress: Bool = false
     var permissionInterruption: Bool = false
 
     func toggle() {

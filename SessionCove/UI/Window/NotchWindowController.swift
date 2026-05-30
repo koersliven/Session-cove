@@ -7,6 +7,8 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
     private(set) var panel: CovePanel?
     private var hostingView: PassThroughHostingView<CoveNotchView>?
     private var screenObserverToken: UUID?
+    private var fullscreenToken: UUID?
+    private var isClosing = false
 
     private let hoverDetector = NotchHoverDetector()
     private var outsideClickMonitor: Any?
@@ -77,24 +79,80 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
 
         observeNotchStatus()
         applyNotchStatus(viewModel.notchStatus)
+
+        // Fullscreen-app gating: hide the notch panel while a fullscreen app
+        // is in front (e.g. Keynote, Mission Control fullscreen window). The
+        // initial callback fires synchronously from subscribe(), so this also
+        // handles "launched while a fullscreen app is already focused".
+        // Subscriber closure must hop to MainActor because the typealias is
+        // a non-isolated `@escaping (Bool) -> Void`; FullscreenAppDetector
+        // dispatches it on the main queue, so assumeIsolated is sound.
+        fullscreenToken = FullscreenAppDetector.shared.subscribe { [weak self] isFullscreen in
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel else { return }
+                if isFullscreen {
+                    // PR 5 keeps it simple: alpha 0 fully hides the notch panel
+                    // when a fullscreen app is active. Spec mentions a 8pt
+                    // hover-trigger strip on non-notch displays — that's
+                    // earmarked for PR 6 / hover-zone tuning.
+                    panel.animator().alphaValue = 0
+                } else {
+                    panel.animator().alphaValue = 1
+                }
+            }
+        }
     }
 
     func showWindow() {
         panel?.orderFrontRegardless()
     }
 
+    /// Idempotent teardown — swap, teardown, deinit may all race; the guard
+    /// keeps the cleanup deterministic and avoids double-removeMonitor /
+    /// double-unsubscribe.
     func close() {
+        guard !isClosing else { return }
+        isClosing = true
+        if let monitor = outsideClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            outsideClickMonitor = nil
+        }
+        if let token = screenObserverToken {
+            ScreenObserver.shared.unsubscribe(token)
+            screenObserverToken = nil
+        }
+        if let token = fullscreenToken {
+            FullscreenAppDetector.shared.unsubscribe(token)
+            fullscreenToken = nil
+        }
+        hoverDetector.cancelPending()
         panel?.orderOut(nil)
     }
 
     func handleDisplayModeWillChange() {
+        // Soft-stop: cancel pending hover and freeze the detector. Actual
+        // cleanup (orderOut + observer detach) waits until the swap's fade-out
+        // completes; WindowManager calls close() in the animation completion.
         hoverDetector.cancelPending()
         hoverDetector.isAnimating = true
         if let token = screenObserverToken {
             ScreenObserver.shared.unsubscribe(token)
             screenObserverToken = nil
         }
-        close()
+    }
+
+    /// Called from WindowManager.handleWake when the workspace wakes. Cancels
+    /// any in-flight hover work and briefly suppresses new hover events so a
+    /// mouse parked over the notch zone during sleep doesn't immediately fire
+    /// a peek while SwiftUI is still re-rendering the closed state.
+    func handleWake() {
+        hoverDetector.cancelPending()
+        hoverDetector.isAnimating = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.hoverDetector.isAnimating = false
+            }
+        }
     }
 
     private func repositionForScreenChange() {
@@ -224,6 +282,9 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
             }
             if let monitor = outsideClickMonitor {
                 NSEvent.removeMonitor(monitor)
+            }
+            if let token = fullscreenToken {
+                FullscreenAppDetector.shared.unsubscribe(token)
             }
         }
     }
