@@ -26,6 +26,10 @@
   <img src="docs/harbor-preview.png" alt="Session Cove Harbor Map" width="480">
 </p>
 
+<p align="center">
+  <img src="docs/permission-ui.png" alt="Permission Approval UI" width="480">
+</p>
+
 ---
 
 ## What is Session Cove?
