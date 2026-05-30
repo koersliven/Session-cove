@@ -34,32 +34,40 @@ final class CoveSoundManager: @unchecked Sendable {
     /// 播放指定事件的音效
     /// - Parameters:
     ///   - event: 音效事件
-    ///   - volumeOverride: 可选的音量覆盖 (0.0 - 1.0)
+    ///   - volumeOverride: 可选的音量覆盖 (0.0 - 1.0)，会与 settings.soundVolume 相乘
     func play(_ event: CoveSoundEvent, volumeOverride: Float? = nil) {
-        guard defaults.object(forKey: "enableSoundEffects") == nil || defaults.bool(forKey: "enableSoundEffects") else { return }
+        // Read CoveSettings keys directly via UserDefaults (the source of truth)
+        // — keys must match CoveSettings.Key (see Settings.swift) or settings will silently no-op.
+        let enabledKey = "coveSoundEnabled"
+        let volumeKey = "coveSoundVolume"
+        let enabled = defaults.object(forKey: enabledKey) as? Bool ?? true
+        guard enabled else { return }
+
+        let baseVolume: Float
+        if defaults.object(forKey: volumeKey) != nil {
+            baseVolume = Float(defaults.double(forKey: volumeKey))
+        } else {
+            baseVolume = 0.6
+        }
 
         soundQueue.async { [self] in
             guard let sound = soundCache[event] else {
                 if let newSound = loadSound(event.fileName) {
                     soundCache[event] = newSound
-                    playSound(newSound, volume: volumeOverride)
+                    playSound(newSound, baseVolume: baseVolume, override: volumeOverride)
                 }
                 return
             }
-            playSound(sound, volume: volumeOverride)
+            playSound(sound, baseVolume: baseVolume, override: volumeOverride)
         }
     }
-    
-    private func playSound(_ sound: NSSound, volume: Float?) {
+
+    private func playSound(_ sound: NSSound, baseVolume: Float, override: Float?) {
         if sound.isPlaying {
             sound.stop()
         }
-        
-        // 获取系统音效音量设置 (0-100)，默认为 80
-        let baseVolume = Float(defaults.integer(forKey: "soundVolume")) / 100.0
-        let finalVolume = volume ?? (baseVolume > 0 ? baseVolume : 0.8)
-        
-        sound.volume = finalVolume
+        let factor = override ?? 1.0
+        sound.volume = max(0, min(1, baseVolume * factor))
         sound.play()
     }
     

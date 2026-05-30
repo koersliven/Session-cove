@@ -32,6 +32,14 @@ final class CovePanel: NSPanel {
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .leftMouseDown || event.type == .rightMouseDown {
+            if let contentView,
+               contentView.hitTest(event.locationInWindow) == nil,
+               let cgEvent = event.cgEvent {
+                // Hit-test miss; replay through to whatever's underneath.
+                MouseEventReplay.mark(cgEvent)
+                cgEvent.post(tap: .cghidEventTap)
+                return
+            }
             makeKey()
         }
         super.sendEvent(event)

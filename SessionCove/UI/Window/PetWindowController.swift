@@ -127,7 +127,8 @@ final class PetWindowController: NSWindowController, NSWindowDelegate, CoveModeW
     }
 
     private func setupGlobalClickMonitor() {
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            if MouseEventReplay.isReplayed(event) { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.viewModel.isExpanded || self.viewModel.uiMode == .compact {

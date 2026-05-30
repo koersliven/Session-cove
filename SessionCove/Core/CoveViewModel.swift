@@ -25,6 +25,13 @@ enum CoveOpenReason: Equatable, Sendable {
     case unknown
 }
 
+enum NotchStatus: Equatable {
+    case closed
+    case peeking
+    case opened
+    case popping
+}
+
 @Observable
 final class CoveViewModel: @unchecked Sendable {
     var islands: [ProjectIsland] = []
@@ -115,6 +122,8 @@ final class CoveViewModel: @unchecked Sendable {
     }
 
     var pingExpandDirection: HorizontalEdge = .trailing
+    var notchStatus: NotchStatus = .closed
+    var permissionInterruption: Bool = false
 
     func toggle() {
         if uiMode == .permissionInterruption {
