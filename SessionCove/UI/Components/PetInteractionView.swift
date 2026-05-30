@@ -45,6 +45,11 @@ final class PetMouseView: NSView {
         isDragging = false
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = StatusMenu.build(target: nil)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
     override func mouseDragged(with event: NSEvent) {
         guard let startPoint = mouseDownPoint,
               let startOrigin = windowStartOrigin else { return }

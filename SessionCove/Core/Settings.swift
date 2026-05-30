@@ -277,6 +277,37 @@ final class CoveSettings: ObservableObject {
     }
 }
 
+// MARK: - Picker support
+
+extension CoveSettings.DisplayMode {
+    var iconName: String {
+        switch self {
+        case .pet: return "pawprint.fill"
+        case .notch: return "rectangle.split.3x1.fill"
+        }
+    }
+}
+
+extension CoveSettings.PetAnchorMode: Identifiable {
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .lastPosition: return "上次位置"
+        case .topCenter: return "居中顶部"
+        }
+    }
+}
+
+extension CoveSettings.NotchTrigger: Identifiable {
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .hover: return "悬停"
+        case .click: return "点击"
+        }
+    }
+}
+
 // MARK: - Helpers
 
 private extension Comparable {

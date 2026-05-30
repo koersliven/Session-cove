@@ -6,8 +6,9 @@ struct SessionCoveApp: App {
 
     var body: some Scene {
         Settings {
-            Text("Session Cove Settings")
-                .frame(width: 300, height: 200)
+            SettingsRoot()
+                .environmentObject(CoveSettings.shared)
+                .environmentObject(AllowlistStore.shared)
         }
     }
 }
