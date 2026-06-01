@@ -11,11 +11,13 @@ struct SessionResumer {
             print("[SessionResumer] TTY lookup result: \(tty ?? "nil")")
 
             DispatchQueue.main.async {
-                if let tty {
-                    focusITermSessionByTTY(tty: tty)
-                } else {
-                    launchNewSession(session: session)
+                if let tty, focusExistingSession(tty: tty) {
+                    return
                 }
+                // No TTY found, or TTY not present in any known terminal —
+                // open a fresh window with `claude --resume <id>` instead of
+                // leaving the user staring at an unrelated front-most app.
+                launchNewSession(session: session)
             }
         }
     }
@@ -108,7 +110,17 @@ struct SessionResumer {
         return p
     }
 
-    private static func focusITermSessionByTTY(tty: String) {
+    /// Tries iTerm2 first, then Terminal.app. Returns true if either succeeded.
+    /// On failure the caller should fall back to launching a new session — that
+    /// produces a usable window even when the live TTY belongs to an unsupported
+    /// terminal (Warp, VS Code, ssh, tmux detached, …).
+    private static func focusExistingSession(tty: String) -> Bool {
+        if focusITermSession(tty: tty) { return true }
+        if focusTerminalAppSession(tty: tty) { return true }
+        return false
+    }
+
+    private static func focusITermSession(tty: String) -> Bool {
         let fullTTY = tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)"
         let shortTTY = tty.replacingOccurrences(of: "/dev/", with: "")
 
@@ -132,29 +144,48 @@ struct SessionResumer {
         end tell
         """
 
-        print("[SessionResumer] Executing focus script for TTY: \(fullTTY)")
-        let result = executeAppleScript(script)
-
-        switch result {
+        print("[SessionResumer] iTerm2 focus attempt for TTY: \(fullTTY)")
+        switch executeAppleScript(script) {
         case .success(let value):
-            if value == "ok" {
-                print("[SessionResumer] Successfully focused iTerm2 session")
-            } else {
-                print("[SessionResumer] TTY not found in iTerm2, bringing iTerm to front")
-                bringITermToFront()
-            }
-        case .failure:
-            print("[SessionResumer] Focus script failed (TCC?), bringing iTerm to front")
-            bringITermToFront()
+            print("[SessionResumer] iTerm2 focus result: \(value)")
+            return value == "ok"
+        case .failure(let err):
+            print("[SessionResumer] iTerm2 focus failed: \(err)")
+            return false
         }
     }
 
-    private static func bringITermToFront() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-a", "iTerm"]
-        try? process.run()
-        process.waitUntilExit()
+    /// Terminal.app's AppleScript exposes `tty` directly on tabs (full path,
+    /// e.g. "/dev/ttys003"). We don't iterate sessions like iTerm because
+    /// Terminal.app has no equivalent — one tab == one session.
+    private static func focusTerminalAppSession(tty: String) -> Bool {
+        let fullTTY = tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)"
+
+        let script = """
+        tell application "Terminal"
+            repeat with theWindow in windows
+                repeat with theTab in tabs of theWindow
+                    if tty of theTab is "\(fullTTY)" then
+                        set selected tab of theWindow to theTab
+                        set frontmost of theWindow to true
+                        activate
+                        return "ok"
+                    end if
+                end repeat
+            end repeat
+            return "not-found"
+        end tell
+        """
+
+        print("[SessionResumer] Terminal.app focus attempt for TTY: \(fullTTY)")
+        switch executeAppleScript(script) {
+        case .success(let value):
+            print("[SessionResumer] Terminal.app focus result: \(value)")
+            return value == "ok"
+        case .failure(let err):
+            print("[SessionResumer] Terminal.app focus failed: \(err)")
+            return false
+        }
     }
 
     private static func launchNewSession(session: SessionRecord) {
