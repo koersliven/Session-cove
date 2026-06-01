@@ -60,6 +60,20 @@ enum ClaudePermissionHook {
             let sessionId = object["sessionId"] as? String
             let matchValue = object["matchValue"] as? String ?? ""
             let receivedAt = (object["receivedAt"] as? TimeInterval).map(Date.init(timeIntervalSince1970:)) ?? Date()
+
+            // Schema v2 fields: missing kind => legacy approval payload (treat
+            // as .approval and ignore questions). HookRequestKind init(rawValue:)
+            // returns nil for an unknown string, so a typo in the python hook
+            // also falls back to .approval rather than crashing.
+            let kind: HookRequestKind = (object["kind"] as? String)
+                .flatMap(HookRequestKind.init(rawValue:)) ?? .approval
+            let questions: [HookInterventionQuestion]
+            if let rawQuestions = object["questions"] as? [[String: Any]] {
+                questions = rawQuestions.compactMap(decodeQuestion(from:))
+            } else {
+                questions = []
+            }
+
             let request = HookPermissionRequest(
                 id: id,
                 sessionId: sessionId,
@@ -67,7 +81,9 @@ enum ClaudePermissionHook {
                 projectPath: projectPath,
                 summary: summary,
                 matchValue: matchValue,
-                receivedAt: receivedAt
+                receivedAt: receivedAt,
+                kind: kind,
+                questions: questions
             )
 
             // UI-side allowlist guard: even if the python hook missed the match
@@ -82,6 +98,37 @@ enum ClaudePermissionHook {
         }
 
         return visible.sorted { $0.receivedAt < $1.receivedAt }
+    }
+
+    /// Decode one element of the `questions` JSON array written by the python
+    /// hook. Mirrors the field names emitted in `bridgeScript.normalize_question`
+    /// (id/header/prompt/options/isMultiple/isOther/isSecret) and tolerates
+    /// missing fields so a partial payload still surfaces something.
+    private static func decodeQuestion(from raw: [String: Any]) -> HookInterventionQuestion? {
+        guard let id = raw["id"] as? String, !id.isEmpty else { return nil }
+        let options: [HookInterventionOption]
+        if let rawOptions = raw["options"] as? [[String: Any]] {
+            options = rawOptions.compactMap { opt -> HookInterventionOption? in
+                guard let optId = opt["id"] as? String, !optId.isEmpty else { return nil }
+                return HookInterventionOption(
+                    id: optId,
+                    title: (opt["title"] as? String) ?? "",
+                    detail: opt["detail"] as? String
+                )
+            }
+        } else {
+            options = []
+        }
+        return HookInterventionQuestion(
+            id: id,
+            header: (raw["header"] as? String) ?? "",
+            prompt: (raw["prompt"] as? String) ?? "",
+            detail: raw["detail"] as? String,
+            options: options,
+            allowsMultiple: (raw["isMultiple"] as? Bool) ?? (raw["allowsMultiple"] as? Bool) ?? false,
+            allowsOther: (raw["isOther"] as? Bool) ?? (raw["allowsOther"] as? Bool) ?? false,
+            isSecret: (raw["isSecret"] as? Bool) ?? false
+        )
     }
 
     static func matchesAllowlist(request: HookPermissionRequest) -> Bool {
@@ -132,7 +179,7 @@ enum ClaudePermissionHook {
     private static func autoResolveAllowed(request: HookPermissionRequest) {
         let response: [String: Any] = [
             "id": request.id,
-            "decision": HookApprovalDecision.allow.rawValue,
+            "decision": HookApprovalDecision.allow.serializedKey,
             "decidedAt": Date().timeIntervalSince1970
         ]
         if let data = try? JSONSerialization.data(withJSONObject: response, options: [.prettyPrinted, .sortedKeys]) {
@@ -144,11 +191,18 @@ enum ClaudePermissionHook {
 
     static func resolve(request: HookPermissionRequest, decision: HookApprovalDecision) throws {
         try FileManager.default.createDirectory(at: responseDirectory, withIntermediateDirectories: true)
-        let response: [String: Any] = [
+        var response: [String: Any] = [
             "id": request.id,
-            "decision": decision.rawValue,
+            "decision": decision.serializedKey,
             "decidedAt": Date().timeIntervalSince1970
         ]
+        // For .answer, attach the {questionId: answer} map so the python hook
+        // can emit it back as PreToolUse hookSpecificOutput.updatedInput.
+        // Other decisions don't carry payload — bridgeScript's output_decision
+        // only inspects "answers" when decision == "answer".
+        if case .answer(let answers) = decision {
+            response["answers"] = answers
+        }
         let data = try JSONSerialization.data(withJSONObject: response, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: responseDirectory.appendingPathComponent("\(request.id).json"), options: .atomic)
         try? FileManager.default.removeItem(at: pendingDirectory.appendingPathComponent("\(request.id).json"))
@@ -228,6 +282,8 @@ enum ClaudePermissionHook {
         let existingData = try? Data(contentsOf: settingsURL)
         var root: [String: Any] = existingData.flatMap(HookConfigParser.parseJSONObject(from:)) ?? [:]
         var hooks = root["hooks"] as? [String: Any] ?? [:]
+        let scriptCommand = "/usr/bin/python3 \(shellQuoted(scriptURL.path))"
+
         let existingEntries = hooks["PermissionRequest"] as? [[String: Any]] ?? []
         let preservedEntries = existingEntries.filter { entry in
             !containsSessionCoveCommand(entry) && !containsPingIslandCommand(entry)
@@ -236,14 +292,35 @@ enum ClaudePermissionHook {
             "hooks": [
                 [
                     "type": "command",
-                    "command": "/usr/bin/python3 \(shellQuoted(scriptURL.path))",
+                    "command": scriptCommand,
                     "timeout": 86400,
                     "statusMessage": "Session Cove is waiting for approval"
                 ]
             ]
         ]
-
         hooks["PermissionRequest"] = preservedEntries + [newEntry]
+
+        // PreToolUse hook: same script, matcher-restricted to AskUserQuestion /
+        // AskFollowupQuestion so non-question tool calls never reach our
+        // process. The bridgeScript also re-checks `is_question_event` defensively
+        // and exits 0 immediately for anything else.
+        let existingPreToolUse = hooks["PreToolUse"] as? [[String: Any]] ?? []
+        let preservedPreToolUse = existingPreToolUse.filter { entry in
+            !containsSessionCoveCommand(entry) && !containsPingIslandCommand(entry)
+        }
+        let preToolUseEntry: [String: Any] = [
+            "matcher": "AskUserQuestion|AskFollowupQuestion",
+            "hooks": [
+                [
+                    "type": "command",
+                    "command": scriptCommand,
+                    "timeout": 86400,
+                    "statusMessage": "Session Cove is collecting your answer"
+                ]
+            ]
+        ]
+        hooks["PreToolUse"] = preservedPreToolUse + [preToolUseEntry]
+
         root["hooks"] = hooks
 
         if let existingData, !containsSessionCoveCommandInData(existingData) {
@@ -317,8 +394,38 @@ enum ClaudePermissionHook {
         def print_allow():
             print(json.dumps({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}, ensure_ascii=False), flush=True)
 
-        def output_decision(decision):
+        def default_pass_through(is_question_event):
+            # Fired when the pending file disappears (Session Cove cancelled it)
+            # or when we time out without a decision. Approval path -> emit allow
+            # so the underlying tool keeps running. Question path -> stay silent;
+            # Claude will fall back to its built-in terminal question prompt
+            # rather than us injecting a guessed answer.
+            if is_question_event:
+                return
+            print_allow()
+
+        def output_decision(decision, is_question_event=False):
             value = decision.get("decision")
+            if value == "answer":
+                # AskUserQuestion / AskFollowupQuestion completion: emit the
+                # PreToolUse hookSpecificOutput shape with permissionDecision
+                # = allow + updatedInput carrying the answers map (questionId
+                # -> user-supplied text). Claude merges updatedInput into the
+                # tool_input before dispatching the actual tool call.
+                answers = decision.get("answers") or {}
+                print(json.dumps({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "allow",
+                        "updatedInput": answers,
+                    }
+                }, ensure_ascii=False), flush=True)
+                return
+            if is_question_event:
+                # Question event closed without an answer (shouldn't happen via
+                # the Session Cove form, but guard anyway). Stay silent so
+                # Claude falls back to its terminal flow.
+                return
             if value == "deny":
                 obj = {"behavior": "deny", "message": "Denied in Session Cove."}
             else:
@@ -416,6 +523,68 @@ enum ClaudePermissionHook {
                 return str(tool_input.get("file_path") or tool_input.get("path") or "")
             return ""
 
+        def normalize_question(raw, idx):
+            # Map Claude's AskUserQuestion shape (question/header/options/multiSelect)
+            # onto Session Cove's HookInterventionQuestion field names. Unknown
+            # input shapes degrade to a free-text prompt instead of dropping the
+            # question entirely.
+            if not isinstance(raw, dict):
+                return {
+                    "id": "q{}".format(idx + 1),
+                    "header": "",
+                    "prompt": str(raw or ""),
+                    "options": [],
+                    "isMultiple": False,
+                    "isOther": False,
+                    "isSecret": False,
+                }
+            qid = str(raw.get("id") or "q{}".format(idx + 1))
+            options = []
+            raw_options = raw.get("options") or []
+            if isinstance(raw_options, list):
+                for opt_idx, opt in enumerate(raw_options):
+                    if not isinstance(opt, dict):
+                        continue
+                    detail = opt.get("description") or opt.get("detail")
+                    options.append({
+                        "id": str(opt.get("id") or "{}-o{}".format(qid, opt_idx + 1)),
+                        "title": str(opt.get("label") or opt.get("title") or ""),
+                        "detail": str(detail) if detail else None,
+                    })
+            return {
+                "id": qid,
+                "header": str(raw.get("header") or ""),
+                "prompt": str(raw.get("question") or raw.get("prompt") or ""),
+                "options": options,
+                "isMultiple": bool(raw.get("multiSelect") or raw.get("allowsMultiple")),
+                "isOther": bool(raw.get("allowsOther")),
+                "isSecret": bool(raw.get("isSecret")),
+            }
+
+        def build_questions(payload):
+            # AskUserQuestion uses tool_input.questions: [{question, header,
+            # options, multiSelect}]. AskFollowupQuestion (older / single-shot
+            # variant) may carry a single string under tool_input.question;
+            # synthesize a one-question free-text fallback for that case.
+            tool_input = payload.get("tool_input") or {}
+            if not isinstance(tool_input, dict):
+                return []
+            raw_questions = tool_input.get("questions")
+            if isinstance(raw_questions, list) and raw_questions:
+                return [normalize_question(q, idx) for idx, q in enumerate(raw_questions)]
+            single = tool_input.get("question")
+            if isinstance(single, str) and single:
+                return [{
+                    "id": "q1",
+                    "header": str(tool_input.get("header") or "Answer"),
+                    "prompt": single,
+                    "options": [],
+                    "isMultiple": False,
+                    "isOther": True,
+                    "isSecret": False,
+                }]
+            return []
+
         def make_request_id(payload):
             stable = {
                 "tool_name": payload.get("tool_name"),
@@ -437,23 +606,32 @@ enum ClaudePermissionHook {
             except Exception:
                 return 0
 
-            if payload.get("hook_event_name") != "PermissionRequest":
-                return 0
+            event_name = payload.get("hook_event_name")
+            tool_name = str(payload.get("tool_name") or "")
+            is_question_tool = tool_name in ("AskUserQuestion", "AskFollowupQuestion")
+            # Two events feed Session Cove now: legacy PermissionRequest
+            # (yes/deny/always) and PreToolUse for the interactive question
+            # tools. The Claude settings.json matcher already restricts
+            # PreToolUse traffic to those two tool names, but we re-check here
+            # so a wildcard registration upstream can't accidentally drown the
+            # script in unrelated PreToolUse calls.
+            is_question_event = event_name == "PreToolUse" and is_question_tool
 
-            if match_allowlist(payload):
-                print_allow()
+            if event_name != "PermissionRequest" and not is_question_event:
                 return 0
 
             session_id = str(payload.get("session_id") or "")
-            if session_id and session_id in load_trusted_sessions():
-                print_allow()
-                return 0
 
-            # Interactive tools (questions/selections) — let terminal handle them
-            tool_name = str(payload.get("tool_name") or "")
-            if tool_name in ("AskUserQuestion", "AskFollowupQuestion"):
-                print_allow()
-                return 0
+            # Allowlist + trusted-session shortcuts only apply to the legacy
+            # approval path. Question events always surface in the UI so the
+            # user can answer; nothing to "pre-approve" for them.
+            if not is_question_event:
+                if match_allowlist(payload):
+                    print_allow()
+                    return 0
+                if session_id and session_id in load_trusted_sessions():
+                    print_allow()
+                    return 0
 
             request_id = make_request_id(payload)
             request_path = os.path.join(PENDING, f"{request_id}.json")
@@ -467,12 +645,20 @@ enum ClaudePermissionHook {
             request = {
                 "id": request_id,
                 "sessionId": session_id,
-                "toolName": str(payload.get("tool_name") or "Tool"),
+                "toolName": tool_name or "Tool",
                 "projectPath": str(payload.get("cwd") or os.getcwd()),
                 "summary": stable_summary(payload),
                 "matchValue": extract_match_value(payload),
                 "receivedAt": time.time(),
             }
+            if is_question_event:
+                request.update({
+                    "kind": "question",
+                    "schemaVersion": 2,
+                    "expectsAnswer": True,
+                    "questions": build_questions(payload),
+                })
+
             tmp = request_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(request, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -483,7 +669,7 @@ enum ClaudePermissionHook {
                 if os.path.exists(response_path):
                     with open(response_path, "r", encoding="utf-8") as f:
                         decision = json.load(f)
-                    output_decision(decision)
+                    output_decision(decision, is_question_event=is_question_event)
                     try:
                         os.remove(request_path)
                     except OSError:
@@ -494,10 +680,10 @@ enum ClaudePermissionHook {
                         pass
                     return 0
                 if not os.path.exists(request_path):
-                    print_allow()
+                    default_pass_through(is_question_event)
                     return 0
                 time.sleep(0.2)
-            print_allow()
+            default_pass_through(is_question_event)
             return 0
 
         if __name__ == "__main__":

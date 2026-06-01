@@ -260,6 +260,65 @@ final class CoveViewModel: @unchecked Sendable {
         updatePendingHookRequest(HookPermissionRequest.mock(for: selectedIsland ?? islands.first))
     }
 
+    /// Mock for the .question kind path (stage 5 verification). Builds a
+    /// request with three representative questions — single-choice radio,
+    /// multi-choice checkbox, and an isSecret SecureField — so the upcoming
+    /// HookQuestionView (stage 6) can be exercised without the python hook.
+    func showMockQuestionRequest() {
+        let island = selectedIsland ?? islands.first
+        let request = HookPermissionRequest(
+            id: "mock-" + UUID().uuidString,
+            sessionId: nil,
+            toolName: "AskUserQuestion",
+            projectPath: island?.path ?? "~/Work/session-cove",
+            summary: "claude needs a few details before continuing.",
+            matchValue: "",
+            receivedAt: Date(),
+            kind: .question,
+            questions: [
+                HookInterventionQuestion(
+                    id: "q1",
+                    header: "Region",
+                    prompt: "Which region should this deploy land in?",
+                    detail: "Pick the closest one to your users.",
+                    options: [
+                        HookInterventionOption(id: "us-east", title: "us-east", detail: "Virginia"),
+                        HookInterventionOption(id: "eu-west", title: "eu-west", detail: "Ireland"),
+                        HookInterventionOption(id: "ap-northeast", title: "ap-northeast", detail: "Tokyo")
+                    ],
+                    allowsMultiple: false,
+                    allowsOther: false,
+                    isSecret: false
+                ),
+                HookInterventionQuestion(
+                    id: "q2",
+                    header: "Components",
+                    prompt: "Which components do you want regenerated?",
+                    detail: nil,
+                    options: [
+                        HookInterventionOption(id: "api", title: "API gateway", detail: nil),
+                        HookInterventionOption(id: "db", title: "Database schema", detail: nil),
+                        HookInterventionOption(id: "ui", title: "UI bundle", detail: nil)
+                    ],
+                    allowsMultiple: true,
+                    allowsOther: false,
+                    isSecret: false
+                ),
+                HookInterventionQuestion(
+                    id: "q3",
+                    header: "Token",
+                    prompt: "Paste the deploy token to continue.",
+                    detail: "Will not be persisted to disk.",
+                    options: [],
+                    allowsMultiple: false,
+                    allowsOther: false,
+                    isSecret: true
+                )
+            ]
+        )
+        updatePendingHookRequest(request)
+    }
+
     func decideHookRequest(_ decision: HookApprovalDecision) {
         lastHookDecision = decision
         CoveSoundManager.shared.play(.bubblePop)
@@ -277,7 +336,18 @@ final class CoveViewModel: @unchecked Sendable {
         hookPollTask?.cancel()
         hookPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                self?.updatePendingHookRequest(ClaudePermissionHook.pendingRequests().first)
+                guard let self else { return }
+                let real = ClaudePermissionHook.pendingRequests().first
+                // UI-injected mocks (Debug menu) are not on disk; the next poll
+                // would return nil and clobber them, causing the popping panel
+                // to vanish in ~500ms. Skip the overwrite when the current
+                // pending is a mock and disk has nothing.
+                let currentIsMock = self.pendingHookRequest?.id.hasPrefix("mock-") == true
+                if real == nil && currentIsMock {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    continue
+                }
+                self.updatePendingHookRequest(real)
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }

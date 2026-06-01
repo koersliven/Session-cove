@@ -50,6 +50,33 @@ struct GeneralTab: View {
                 }
             }
 
+            // Terminal selection. Bound to `preferredTerminal` (Optional<TerminalKind>);
+            // nil = auto-detect (the default), Some(kind) = user-pinned. Non-installed
+            // kinds are surfaced with a "(未安装)" suffix rather than hidden, so the
+            // user notices when their pinned choice has been uninstalled. Selecting a
+            // non-installed kind is harmless because `TerminalDetector.resolvedTerminal()`
+            // falls through to ancestor / installed cascade in that case.
+            Section("终端") {
+                Picker("首选终端", selection: $settings.preferredTerminal) {
+                    Text("自动检测").tag(Optional<TerminalKind>.none)
+                    ForEach(TerminalKind.allCases, id: \.self) { kind in
+                        Text(terminalPickerLabel(for: kind))
+                            .tag(Optional<TerminalKind>.some(kind))
+                    }
+                }
+                .pickerStyle(.menu)
+
+                HStack {
+                    Text("当前检测")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(detectedTerminalName)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("语言") {
                 Picker("界面语言", selection: .constant(0)) {
                     Text("跟随系统").tag(0)
@@ -58,5 +85,21 @@ struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// Picker row label. Appends "(未安装)" when the terminal's bundle is not
+    /// registered with Launch Services, matching the same probe used by
+    /// `TerminalDetector.installedTerminals()` so the picker stays in sync
+    /// with the cascade's reality.
+    private func terminalPickerLabel(for kind: TerminalKind) -> String {
+        let installed = TerminalAdapterHelpers.isAppInstalled(bundleID: kind.bundleID)
+        return installed ? kind.displayName : "\(kind.displayName)（未安装）"
+    }
+
+    /// Resolves the terminal that resume operations would actually use right
+    /// now. Reads from `TerminalDetector` so any change to `preferredTerminal`
+    /// (or installed-app state via NSWorkspace) re-renders this row.
+    private var detectedTerminalName: String {
+        TerminalDetector.resolvedTerminal().kind.displayName
     }
 }

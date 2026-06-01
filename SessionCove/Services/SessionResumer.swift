@@ -1,28 +1,62 @@
 import AppKit
 
+/// Top-level facade for "the user clicked a session — bring it back".
+///
+/// Wire-phase responsibilities:
+/// 1. Locate the live TTY + pid for the session via `ps`/`lsof`
+/// 2. Try the ancestor terminal first (the one that actually owns `claude`)
+/// 3. Fall back to iTerm2 / Terminal.app focus attempts
+/// 4. As a last resort, launch a fresh window via the resolved adapter
+///
+/// All terminal-specific scripting now lives in
+/// `Services/Terminal/Adapters/*Adapter.swift`. This file no longer talks
+/// AppleScript directly — it composes adapter calls.
 struct SessionResumer {
     static func resume(session: SessionRecord) {
         print("[SessionResumer] resume called for session: \(session.id) project: \(session.projectPath)")
 
-        // Run TTY lookup on background thread, then execute AppleScript on main thread.
-        // NSAppleScript must run on the main thread.
+        // Everything below — TTY lookup, ancestor walk (up to 128 ps calls),
+        // adapter focus/launch (osascript or kitty/wezterm CLI) — must stay
+        // off the main thread. Running these on main under @MainActor caused
+        // the "spinner forever" hang: ~50 ps invocations + an osascript that
+        // can block on a hidden TCC dialog never let the RunLoop spin.
         DispatchQueue.global(qos: .userInitiated).async {
-            let tty = findSessionTTY(session: session)
-            print("[SessionResumer] TTY lookup result: \(tty ?? "nil")")
+            let lookup = findSessionTTY(session: session)
+            if let lookup {
+                print("[SessionResumer] TTY lookup result: tty=\(lookup.tty) pid=\(lookup.pid)")
+            } else {
+                print("[SessionResumer] TTY lookup result: nil")
+            }
 
-            DispatchQueue.main.async {
-                if let tty, focusExistingSession(tty: tty) {
-                    return
-                }
-                // No TTY found, or TTY not present in any known terminal —
-                // open a fresh window with `claude --resume <id>` instead of
-                // leaving the user staring at an unrelated front-most app.
-                launchNewSession(session: session)
+            if let lookup, focusExistingSession(tty: lookup.tty, pid: lookup.pid) {
+                return
+            }
+            // No TTY found, or TTY not present in any known terminal —
+            // open a fresh window with `claude --resume <id>` instead of
+            // leaving the user staring at an unrelated front-most app.
+            launchNewSession(session: session)
+        }
+    }
+
+    static func launchNew(projectPath: String) {
+        print("[SessionResumer] Launching new Claude session in: \(projectPath)")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let adapter = TerminalDetector.resolvedTerminal()
+            do {
+                try adapter.launch(command: "claude", cwd: projectPath)
+                print("[SessionResumer] launched new session via \(adapter.kind.displayName)")
+            } catch {
+                print("[SessionResumer] launchNew failed via \(adapter.kind.displayName): \(error)")
+                // Last-ditch fallback: Terminal.app is bundled with macOS so it
+                // is always present and reliable.
+                fallbackTerminalApp(command: "claude", cwd: projectPath)
             }
         }
     }
 
-    private static func findSessionTTY(session: SessionRecord) -> String? {
+    // MARK: - TTY lookup
+
+    private static func findSessionTTY(session: SessionRecord) -> (tty: String, pid: Int32)? {
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -63,7 +97,7 @@ struct SessionResumer {
 
             // Phase 1: args literally contain the session id (covers `claude --resume <id>`).
             if argsJoined.contains(session.id) {
-                return tty
+                return (tty, pid)
             }
 
             if commName == "claude" {
@@ -76,7 +110,7 @@ struct SessionResumer {
         for (pid, tty) in claudePidTty {
             if let cwd = lsofCwd(pid: pid), normalizePath(cwd) == targetCwd {
                 print("[SessionResumer] Matched bare claude pid=\(pid) tty=\(tty) by cwd=\(cwd)")
-                return tty
+                return (tty, pid)
             }
         }
         return nil
@@ -110,178 +144,86 @@ struct SessionResumer {
         return p
     }
 
-    /// Tries iTerm2 first, then Terminal.app. Returns true if either succeeded.
-    /// On failure the caller should fall back to launching a new session — that
-    /// produces a usable window even when the live TTY belongs to an unsupported
-    /// terminal (Warp, VS Code, ssh, tmux detached, …).
-    private static func focusExistingSession(tty: String) -> Bool {
-        if focusITermSession(tty: tty) { return true }
-        if focusTerminalAppSession(tty: tty) { return true }
+    // MARK: - Focus cascade
+
+    /// Three-tier focus attempt:
+    /// 1. Ancestor terminal of the live `claude` pid — most accurate.
+    /// 2. iTerm2 — historical golden path for users without ancestor info.
+    /// 3. Terminal.app — guaranteed present; last focus attempt before
+    ///    falling back to launching a fresh window.
+    private static func focusExistingSession(tty: String, pid: Int32) -> Bool {
+        // 1. Ancestor walk — if we can prove which terminal owns this pid,
+        //    target it directly. Avoids cross-terminal mis-focus when the user
+        //    has both iTerm and Terminal.app open.
+        if let kind = TerminalDetector.ancestorTerminal(of: pid),
+           let adapter = adapterFor(kind),
+           adapter.isInstalled {
+            print("[SessionResumer] focus via ancestor adapter: \(kind.displayName)")
+            if adapter.focusSession(tty: tty) {
+                return true
+            }
+        }
+
+        // 2. iTerm2 fallback — direct adapter, no detector prefs.
+        let iterm = ITermAdapter()
+        if iterm.isInstalled {
+            print("[SessionResumer] focus via iTerm fallback")
+            if iterm.focusSession(tty: tty) {
+                return true
+            }
+        }
+
+        // 3. Terminal.app fallback — always installed.
+        print("[SessionResumer] focus via Terminal.app fallback")
+        if TerminalAppAdapter().focusSession(tty: tty) {
+            return true
+        }
+
         return false
     }
 
-    private static func focusITermSession(tty: String) -> Bool {
-        let fullTTY = tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)"
-        let shortTTY = tty.replacingOccurrences(of: "/dev/", with: "")
-
-        let script = """
-        tell application "iTerm2"
-            repeat with theWindow in windows
-                repeat with theTab in tabs of theWindow
-                    repeat with theSession in sessions of theTab
-                        set sessionTTY to tty of theSession
-                        if sessionTTY is "\(fullTTY)" or sessionTTY is "\(shortTTY)" then
-                            select theTab
-                            select theSession
-                            select (first window whose id is (id of theWindow))
-                            activate
-                            return "ok"
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-            return "not-found"
-        end tell
-        """
-
-        print("[SessionResumer] iTerm2 focus attempt for TTY: \(fullTTY)")
-        switch executeAppleScript(script) {
-        case .success(let value):
-            print("[SessionResumer] iTerm2 focus result: \(value)")
-            return value == "ok"
-        case .failure(let err):
-            print("[SessionResumer] iTerm2 focus failed: \(err)")
-            return false
-        }
-    }
-
-    /// Terminal.app's AppleScript exposes `tty` directly on tabs (full path,
-    /// e.g. "/dev/ttys003"). We don't iterate sessions like iTerm because
-    /// Terminal.app has no equivalent — one tab == one session.
-    private static func focusTerminalAppSession(tty: String) -> Bool {
-        let fullTTY = tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)"
-
-        let script = """
-        tell application "Terminal"
-            repeat with theWindow in windows
-                repeat with theTab in tabs of theWindow
-                    if tty of theTab is "\(fullTTY)" then
-                        set selected tab of theWindow to theTab
-                        set frontmost of theWindow to true
-                        activate
-                        return "ok"
-                    end if
-                end repeat
-            end repeat
-            return "not-found"
-        end tell
-        """
-
-        print("[SessionResumer] Terminal.app focus attempt for TTY: \(fullTTY)")
-        switch executeAppleScript(script) {
-        case .success(let value):
-            print("[SessionResumer] Terminal.app focus result: \(value)")
-            return value == "ok"
-        case .failure(let err):
-            print("[SessionResumer] Terminal.app focus failed: \(err)")
-            return false
-        }
-    }
+    // MARK: - Launch
 
     private static func launchNewSession(session: SessionRecord) {
-        let command = "cd \(shellEscape(session.projectPath)) && claude --resume \(session.id)"
-        print("[SessionResumer] Launching new iTerm2 session for: \(session.id)")
-        launchInNewWindow(command: command)
-    }
-
-    static func launchNew(projectPath: String) {
-        let command = "cd \(shellEscape(projectPath)) && claude"
-        print("[SessionResumer] Launching new Claude session in: \(projectPath)")
-        launchInNewWindow(command: command)
-    }
-
-    private static func launchInNewWindow(command: String) {
-        let escapedCommand = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-
-        let script = """
-        tell application "iTerm2"
-            activate
-            set newWindow to (create window with default profile)
-            tell current session of newWindow
-                write text "\(escapedCommand)"
-            end tell
-        end tell
-        """
-
-        let result = executeAppleScript(script)
-        switch result {
-        case .success:
-            print("[SessionResumer] Successfully launched new iTerm2 window")
-        case .failure(let errorDesc):
-            print("[SessionResumer] iTerm2 launch failed: \(errorDesc), trying Terminal.app")
-            openInTerminal(command: command)
-        }
-    }
-
-    private static func openInTerminal(command: String) {
-        let escapedCommand = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-
-        let script = """
-        tell application "Terminal"
-            activate
-            do script "\(escapedCommand)"
-        end tell
-        """
-
-        let result = executeAppleScript(script)
-        switch result {
-        case .success:
-            print("[SessionResumer] Successfully launched Terminal.app session")
-        case .failure(let errorDesc):
-            print("[SessionResumer] Terminal.app also failed: \(errorDesc)")
-        }
-    }
-
-    // MARK: - Helpers
-
-    private enum ScriptResult {
-        case success(String)
-        case failure(String)
-    }
-
-    private static func executeAppleScript(_ source: String) -> ScriptResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", source]
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
+        let adapter = TerminalDetector.resolvedTerminal()
+        let command = "claude --resume \(session.id)"
+        print("[SessionResumer] Launching new session for \(session.id) via \(adapter.kind.displayName)")
         do {
-            try process.run()
+            try adapter.launch(command: command, cwd: session.projectPath)
         } catch {
-            return .failure("Failed to launch osascript: \(error)")
+            print("[SessionResumer] launch via \(adapter.kind.displayName) failed: \(error)")
+            fallbackTerminalApp(command: command, cwd: session.projectPath)
         }
-
-        process.waitUntilExit()
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        if process.terminationStatus != 0 {
-            let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-            let errStr = String(data: errData, encoding: .utf8) ?? ""
-            return .failure("osascript exit \(process.terminationStatus): \(errStr)")
-        }
-
-        return .success(output)
     }
 
-    private static func shellEscape(_ path: String) -> String {
-        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    /// Last-ditch fallback when the resolved adapter throws. Terminal.app is
+    /// bundled with macOS so this should always succeed; if it doesn't, log
+    /// loudly and let the user know via console.
+    private static func fallbackTerminalApp(command: String, cwd: String) {
+        let adapter = TerminalAppAdapter()
+        do {
+            try adapter.launch(command: command, cwd: cwd)
+            print("[SessionResumer] fallback Terminal.app succeeded")
+        } catch {
+            print("[SessionResumer] fallback Terminal.app also failed: \(error)")
+        }
+    }
+
+    // MARK: - Adapter lookup
+
+    /// Map a `TerminalKind` to its concrete adapter. Mirrors
+    /// `TerminalDetector.adapter(for:)` (which is private to that file). We
+    /// duplicate the switch here so SessionResumer can route the ancestor
+    /// kind directly without exposing detector internals.
+    private static func adapterFor(_ kind: TerminalKind) -> TerminalAdapter? {
+        switch kind {
+        case .iterm:        return ITermAdapter()
+        case .terminalApp:  return TerminalAppAdapter()
+        case .ghostty:      return GhosttyAdapter()
+        case .kitty:        return KittyAdapter()
+        case .wezterm:      return WezTermAdapter()
+        case .alacritty:    return AlacrittyAdapter()
+        case .warp:         return nil  // intentional — see WarpAdapter
+        }
     }
 }

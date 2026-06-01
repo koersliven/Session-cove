@@ -64,6 +64,7 @@ final class CoveSettings: ObservableObject {
         case petAnchorPoint   = "covePetAnchorPoint"  // matches PetAnchorPersistence.defaultsKey
         case notchTrigger     = "coveNotchTrigger"
         case showArchived     = "showArchivedSessions"
+        case preferredTerminal = "covePreferredTerminal"
     }
 
     /// Allowed range for `contentFontSize`. Exposed for PR 2's slider.
@@ -157,6 +158,17 @@ final class CoveSettings: ObservableObject {
         }
     }
 
+    /// User-selected terminal for resume operations. `nil` (the default)
+    /// means "auto-detect" — `TerminalDetector.resolvedTerminal()` will
+    /// fall back to ancestor detection or installed-list cascade. Set
+    /// explicitly when the user picks a terminal in settings.
+    @Published var preferredTerminal: TerminalKind? {
+        didSet {
+            guard !bootstrap else { return }
+            persistOptionalTerminal(preferredTerminal)
+        }
+    }
+
     // MARK: - Internals
 
     private let defaults: UserDefaults
@@ -221,6 +233,13 @@ final class CoveSettings: ObservableObject {
 
         self.showArchivedSessions = defaults.bool(forKey: Key.showArchived.rawValue)
 
+        if let raw = defaults.string(forKey: Key.preferredTerminal.rawValue),
+           let kind = TerminalKind(rawValue: raw) {
+            self.preferredTerminal = kind
+        } else {
+            self.preferredTerminal = nil
+        }
+
         bootstrap = false
     }
 
@@ -235,6 +254,16 @@ final class CoveSettings: ObservableObject {
             defaults.set(Int(id), forKey: Key.screenID.rawValue)
         } else {
             defaults.removeObject(forKey: Key.screenID.rawValue)
+        }
+    }
+
+    /// Persist `TerminalKind` as its raw string; `nil` removes the key so
+    /// auto-detect resumes (matches `preferredScreenID` semantics).
+    private func persistOptionalTerminal(_ kind: TerminalKind?) {
+        if let kind {
+            defaults.set(kind.rawValue, forKey: Key.preferredTerminal.rawValue)
+        } else {
+            defaults.removeObject(forKey: Key.preferredTerminal.rawValue)
         }
     }
 

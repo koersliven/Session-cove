@@ -86,6 +86,9 @@ struct CoveMapView: View {
                     pixelButton("TEST") {
                         viewModel.showMockHookRequest()
                     }
+                    pixelButton("ASK?") {
+                        viewModel.showMockQuestionRequest()
+                    }
                     pixelButton("X") {
                         viewModel.toggle()
                     }

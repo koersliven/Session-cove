@@ -10,6 +10,7 @@ final class WindowManager {
     func setup() {
         let viewModel = CoveViewModel()
         self.viewModel = viewModel
+        MenuActionTarget.shared.viewModel = viewModel
 
         do {
             try ClaudePermissionHook.install()

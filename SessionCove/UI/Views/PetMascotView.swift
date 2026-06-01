@@ -7,12 +7,16 @@ struct PetMascotView: View {
     private var mascotState: PixelMascotState {
         if isDragging { return .dragged }
         if viewModel.pendingHookRequest != nil { return .attention }
-        guard let session = viewModel.representativeSession else { return .idle }
-        switch session.status {
-        case .active: return .working
-        case .recentlyIdle: return .idle
-        case .archived: return .sleeping
-        }
+        // The body block reads `mascotState` THREE times per frame (state
+        // input, vertical offset, breath scale). Resolving via
+        // `representativeSession` re-sorts islands + sessions on every read
+        // — at 30fps that was 180 sort calls/s, hot enough on the main
+        // thread to make the pet panel's mouse-event dispatch feel frozen.
+        // Aggregate counts on the view model are O(islands), no sort.
+        if viewModel.activeSessions > 0 { return .working }
+        if viewModel.islands.contains(where: { $0.recentCount > 0 }) { return .idle }
+        if viewModel.islands.isEmpty { return .idle }
+        return .sleeping
     }
 
     private var hasAttention: Bool {
@@ -39,10 +43,15 @@ struct PetMascotView: View {
             )
 
             TimelineView(.animation(minimumInterval: animationInterval)) { timeline in
+                // Compute once per frame — `mascotState` is read by the
+                // mascot view, the vertical offset, and the breath scale.
+                // Re-reading it three times re-resolves all the model
+                // queries every frame for no reason.
+                let state = mascotState
                 let time = timeline.date.timeIntervalSinceReferenceDate
                 ZStack {
-                    CoveMascotView(state: mascotState, scale: .pet, grounded: false)
-                        .offset(y: isDragging ? 0 : verticalOffset(time))
+                    CoveMascotView(state: state, scale: .pet, grounded: false)
+                        .offset(y: isDragging ? 0 : verticalOffset(time, state: state))
                         .scaleEffect(breathScale(time))
 
 
@@ -60,8 +69,8 @@ struct PetMascotView: View {
         .frame(width: 48, height: 48)
     }
 
-    private func verticalOffset(_ time: TimeInterval) -> CGFloat {
-        switch mascotState {
+    private func verticalOffset(_ time: TimeInterval, state: PixelMascotState) -> CGFloat {
+        switch state {
         case .working:   CGFloat(sin(time * .pi * 5) * 1.5)
         case .idle:      CGFloat(sin(time * .pi * 1.2) * 0.8)
         case .sleeping:  CGFloat(sin(time * .pi * 0.8) * 0.6)

@@ -31,6 +31,26 @@ final class CovePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {
+        // Critical: a replayed event is one WE just re-posted via
+        // cgEvent.post. Because the panel is still topmost when the event
+        // re-enters the HID stream, it lands right back on us. Without this
+        // short-circuit, every transparent-area click triggered an infinite
+        // replay loop — the visible symptom was "the whole screen freezes,
+        // but switching Spaces unfreezes it" because the Space switch
+        // briefly suspends the event tap and lets the queue drain.
+        if MouseEventReplay.isReplayed(event) {
+            // Briefly drop ourselves out of the mouse path so this replayed
+            // click can land on whatever is *underneath* the panel. Restore
+            // on the next runloop tick — by then the event will have been
+            // dispatched. Without this, AppKit re-targets the panel and the
+            // click never reaches the menu bar / desktop / app below.
+            ignoresMouseEvents = true
+            DispatchQueue.main.async { [weak self] in
+                self?.ignoresMouseEvents = false
+            }
+            return
+        }
+
         if event.type == .leftMouseDown || event.type == .rightMouseDown {
             if let contentView,
                contentView.hitTest(event.locationInWindow) == nil,

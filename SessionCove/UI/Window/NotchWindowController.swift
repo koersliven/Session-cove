@@ -60,12 +60,14 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         // peeking/opened, so SwiftUI gestures fire normally there).
         hoverDetector.onSustainedEnter = { [weak self] in
             guard let self else { return }
+            print("[Hover] sustainedEnter — currentStatus=\(self.viewModel.notchStatus)")
             if self.viewModel.notchStatus == .closed {
                 self.viewModel.notchStatus = .peeking
             }
         }
         hoverDetector.onSustainedExit = { [weak self] in
             guard let self else { return }
+            print("[Hover] sustainedExit — currentStatus=\(self.viewModel.notchStatus)")
             if self.viewModel.notchStatus == .peeking {
                 self.viewModel.notchStatus = .closed
             }
@@ -84,10 +86,17 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
                 // Panel is fullWidth × 750 always, but only the visible notch
                 // graphic should count as "inside" — clicks on the surrounding
                 // transparent panel area should still close the opened notch.
-                let visible = self.visibleNotchScreenRect(for: self.viewModel.notchStatus, on: screen)
+                let visible = self.visibleNotchScreenRect(
+                    for: self.viewModel.notchStatus,
+                    on: screen,
+                    kind: self.viewModel.pendingHookRequest?.kind
+                )
                 if !visible.contains(loc) {
                     if self.viewModel.notchStatus == .opened {
+                        print("[OutsideClick] mouseDown outside notch while opened → forcing closed (loc=\(loc))")
                         self.viewModel.notchStatus = .closed
+                    } else if self.viewModel.notchStatus == .popping {
+                        print("[OutsideClick] mouseDown outside notch while popping — IGNORED (force-decision policy) loc=\(loc)")
                     }
                 }
             }
@@ -111,7 +120,11 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
             MainActor.assumeIsolated {
                 guard let self, let screen = self.currentScreen() else { return }
                 let loc = NSEvent.mouseLocation
-                let visible = self.visibleNotchScreenRect(for: self.viewModel.notchStatus, on: screen)
+                let visible = self.visibleNotchScreenRect(
+                    for: self.viewModel.notchStatus,
+                    on: screen,
+                    kind: self.viewModel.pendingHookRequest?.kind
+                )
                 guard visible.contains(loc) else { return }
                 let menu = StatusMenu.build(target: nil)
                 menu.popUp(positioning: nil, at: loc, in: nil)
@@ -122,7 +135,11 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
                 if MouseEventReplay.isReplayed(event) { return event }
                 guard let self, let screen = self.currentScreen() else { return event }
                 let loc = NSEvent.mouseLocation
-                let visible = self.visibleNotchScreenRect(for: self.viewModel.notchStatus, on: screen)
+                let visible = self.visibleNotchScreenRect(
+                    for: self.viewModel.notchStatus,
+                    on: screen,
+                    kind: self.viewModel.pendingHookRequest?.kind
+                )
                 guard visible.contains(loc) else { return event }
                 let menu = StatusMenu.build(target: nil)
                 menu.popUp(positioning: nil, at: loc, in: nil)
@@ -131,6 +148,7 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         }
 
         observeNotchStatus()
+        observePendingHookRequest()
         applyNotchStatus(viewModel.notchStatus)
 
         // Fullscreen-app gating: hide the notch panel while a fullscreen app
@@ -195,6 +213,7 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if self.viewModel.notchStatus != .closed {
+                    print("[SpaceChange] active space changed — forcing closed (was \(self.viewModel.notchStatus))")
                     self.hoverDetector.cancelPending()
                     self.hoverDetector.isAnimating = true
                     self.viewModel.notchStatus = .closed
@@ -311,8 +330,44 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         } onChange: {
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                print("[NotchStatus] changed → \(self.viewModel.notchStatus) (pending=\(self.viewModel.pendingHookRequest?.id ?? "nil"))")
                 self.applyNotchStatus(self.viewModel.notchStatus)
                 self.observeNotchStatus()
+            }
+        }
+    }
+
+    /// Bridge `viewModel.pendingHookRequest` ↔ `notchStatus = .popping`.
+    /// Plan stage 1 wires the popping path the previous PRs declared but
+    /// never actually triggered. Same one-shot tracking pattern as
+    /// `observeNotchStatus` — re-subscribe after each fire.
+    ///
+    /// - pending arrives while not popping → save current status to
+    ///   `modeBeforePopping`, force `.popping`.
+    /// - pending clears while popping → restore `modeBeforePopping ?? .closed`.
+    /// `spaceChangeObserver` resets to `.closed` on space switch but keeps the
+    /// pending request alive in the viewModel; when the user returns, this
+    /// observer re-fires and pops the panel back open.
+    private func observePendingHookRequest() {
+        withObservationTracking {
+            _ = viewModel.pendingHookRequest
+        } onChange: {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let pending = self.viewModel.pendingHookRequest
+                let status = self.viewModel.notchStatus
+                print("[NotchPopping] observePendingHookRequest fired — pending=\(pending?.id ?? "nil") status=\(status) modeBefore=\(String(describing: self.modeBeforePopping))")
+                if pending != nil, status != .popping {
+                    self.modeBeforePopping = status
+                    self.viewModel.notchStatus = .popping
+                    print("[NotchPopping] → popping (saved modeBeforePopping=\(status))")
+                } else if pending == nil, status == .popping {
+                    let target = self.modeBeforePopping ?? .closed
+                    self.viewModel.notchStatus = target
+                    self.modeBeforePopping = nil
+                    print("[NotchPopping] ← restored from popping → \(target)")
+                }
+                self.observePendingHookRequest()
             }
         }
     }
@@ -345,11 +400,22 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
             // zone matches the visible-notch screen rect so moving inside the
             // visible content doesn't trigger a spurious "exit".
             panel.ignoresMouseEvents = false
+            // The hit-test closure reads `kind` lazily so a popping panel that
+            // morphs from approval (120pt) to question (360pt) — e.g. one
+            // request resolves and another arrives — still matches the latest
+            // SwiftUI height without needing a fresh applyNotchStatus call.
             hostingView?.hitTestRectProvider = { [weak self] in
                 guard let self else { return [] }
-                return [self.visibleNotchPanelRect(for: status)]
+                let kind = self.viewModel.pendingHookRequest?.kind
+                return [self.visibleNotchPanelRect(for: status, kind: kind)]
             }
-            hoverDetector.setNotchScreenRect(visibleNotchScreenRect(for: status, on: screen))
+            hoverDetector.setNotchScreenRect(
+                visibleNotchScreenRect(
+                    for: status,
+                    on: screen,
+                    kind: viewModel.pendingHookRequest?.kind
+                )
+            )
         }
 
         switch status {
@@ -379,21 +445,26 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
     /// Visible notch graphic dimensions for each state. The panel itself is
     /// always fullWidth × 750; these sizes describe the morphing black-clipped
     /// container inside SwiftUI. Mirror the values in CoveNotchView so the
-    /// hit-test rects stay in lockstep with the visual.
-    private func visibleNotchSize(for status: NotchStatus) -> CGSize {
+    /// hit-test rects stay in lockstep with the visual. `kind` only matters in
+    /// `.popping`: question kind needs ~360pt of vertical space for the
+    /// ScrollView + options; legacy approval still uses the compact 120pt strip.
+    private func visibleNotchSize(for status: NotchStatus, kind: HookRequestKind?) -> CGSize {
         switch status {
         case .closed: return CGSize(width: 224, height: 32)
         case .peeking: return CGSize(width: 480, height: 220)
-        case .opened, .popping: return CGSize(width: 600, height: 480)
+        case .opened: return CGSize(width: 600, height: 480)
+        case .popping:
+            let height: CGFloat = (kind == .question) ? 360 : 120
+            return CGSize(width: 480, height: height)
         }
     }
 
     /// Visible notch rect in panel-local (bottom-left origin) coords, suitable
     /// for `PassThroughHostingView.hitTestRectProvider`. Top-aligned within
     /// the panel; horizontally centered.
-    private func visibleNotchPanelRect(for status: NotchStatus) -> NSRect {
+    private func visibleNotchPanelRect(for status: NotchStatus, kind: HookRequestKind?) -> NSRect {
         guard let panel = panel else { return .zero }
-        let size = visibleNotchSize(for: status)
+        let size = visibleNotchSize(for: status, kind: kind)
         return NSRect(
             x: panel.frame.width / 2 - size.width / 2,
             y: panel.frame.height - size.height,
@@ -405,8 +476,8 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
     /// Visible notch rect in screen coords. Used by hover detector +
     /// outside-click + right-click handlers so they only react to the actual
     /// visible notch graphic, not the invisible fullWidth panel surrounding it.
-    private func visibleNotchScreenRect(for status: NotchStatus, on screen: NSScreen) -> NSRect {
-        let size = visibleNotchSize(for: status)
+    private func visibleNotchScreenRect(for status: NotchStatus, on screen: NSScreen, kind: HookRequestKind?) -> NSRect {
+        let size = visibleNotchSize(for: status, kind: kind)
         return NSRect(
             x: screen.frame.midX - size.width / 2,
             y: screen.frame.maxY - size.height,

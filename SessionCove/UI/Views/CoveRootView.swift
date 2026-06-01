@@ -23,8 +23,16 @@ struct CoveRootView: View {
                 .frame(width: 300, height: 50)
 
         case .ping:
-            pingView
-                .frame(width: 388, height: 72)
+            // Question-kind requests need a tall ping frame (≥360pt) so the
+            // HookQuestionView's options + free-text fields aren't clipped.
+            // Approval-kind keeps the existing 72pt strip.
+            if viewModel.pendingHookRequest?.kind == .question {
+                pingView
+                    .frame(width: 388, height: 360)
+            } else {
+                pingView
+                    .frame(width: 388, height: 72)
+            }
 
         case .expanded:
             expandedView
@@ -58,11 +66,26 @@ struct CoveRootView: View {
     @ViewBuilder
     private var pingCardContent: some View {
         if let request = viewModel.pendingHookRequest {
-            PermissionPingCard(request: request) { decision in
-                viewModel.decideHookRequest(decision)
+            switch request.kind {
+            case .approval:
+                PermissionPingCard(request: request) { decision in
+                    viewModel.decideHookRequest(decision)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            case .question:
+                HookQuestionView(
+                    request: request,
+                    onSubmit: { answers in
+                        viewModel.decideHookRequest(.answer(answers: answers))
+                    },
+                    onCancel: {
+                        viewModel.decideHookRequest(.deny)
+                    }
+                )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
         }
     }
 

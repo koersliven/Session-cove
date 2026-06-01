@@ -27,23 +27,72 @@ struct CoveNotchView: View {
         VStack(spacing: 0) {
             AdaptiveHeader(viewModel: viewModel)
 
-            if viewModel.notchStatus != .closed {
-                HarborMapOverviewView(
-                    viewModel: viewModel,
-                    showsHeader: false,
-                    compact: viewModel.notchStatus == .peeking,
-                    onAnyIslandTap: viewModel.notchStatus == .peeking
-                        ? { viewModel.notchStatus = .opened }
-                        : nil
-                )
-                // Pure opacity transition for body — anything heavier (scale,
-                // matchedGeometry) compounded with the outer spring animation
-                // visibly stuttered the harbor on insertion. Outgoing fade is
-                // fast so it doesn't drag during the new state's reveal.
-                .transition(.asymmetric(
-                    insertion: .opacity.animation(.easeOut(duration: 0.22)),
-                    removal: .opacity.animation(.easeIn(duration: 0.12))
-                ))
+            if viewModel.notchStatus == .popping {
+                // Permission popping: render the approval card OR the question
+                // form based on the request kind. Use if-let on
+                // pendingHookRequest as a defensive fallback — if the request
+                // is cleared a tick before notchStatus resets, the empty
+                // branch keeps us from crashing on force-unwrap.
+                if let request = viewModel.pendingHookRequest {
+                    Group {
+                        switch request.kind {
+                        case .approval:
+                            PermissionPingCard(request: request) { decision in
+                                viewModel.decideHookRequest(decision)
+                            }
+                        case .question:
+                            HookQuestionView(
+                                request: request,
+                                onSubmit: { answers in
+                                    viewModel.decideHookRequest(.answer(answers: answers))
+                                },
+                                onCancel: {
+                                    viewModel.decideHookRequest(.deny)
+                                }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.22)),
+                        removal: .opacity.animation(.easeIn(duration: 0.12))
+                    ))
+                }
+            } else if viewModel.notchStatus != .closed {
+                // .opened with a sessionFocus uiMode + selectedSession routes
+                // to the detail view — same single source of truth (uiMode +
+                // selectedSession) the pet-mode CoveRootView uses, so back()
+                // and selectSession() work uniformly across modes.
+                // .peeking always shows the compact harbor regardless of
+                // uiMode (peeking is "preview", clicking an island upgrades
+                // to .opened which then honours the session selection).
+                if viewModel.notchStatus == .opened,
+                   viewModel.uiMode == .sessionFocus,
+                   let session = viewModel.selectedSession {
+                    SessionDetailView(session: session, viewModel: viewModel)
+                        .transition(.asymmetric(
+                            insertion: .opacity.animation(.easeOut(duration: 0.22)),
+                            removal: .opacity.animation(.easeIn(duration: 0.12))
+                        ))
+                } else {
+                    HarborMapOverviewView(
+                        viewModel: viewModel,
+                        showsHeader: false,
+                        compact: viewModel.notchStatus == .peeking,
+                        onAnyIslandTap: viewModel.notchStatus == .peeking
+                            ? { viewModel.notchStatus = .opened }
+                            : nil
+                    )
+                    // Pure opacity transition for body — anything heavier (scale,
+                    // matchedGeometry) compounded with the outer spring animation
+                    // visibly stuttered the harbor on insertion. Outgoing fade is
+                    // fast so it doesn't drag during the new state's reveal.
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.22)),
+                        removal: .opacity.animation(.easeIn(duration: 0.12))
+                    ))
+                }
             }
         }
         .frame(width: notchWidth, height: notchHeight, alignment: .top)
@@ -56,7 +105,8 @@ struct CoveNotchView: View {
         switch viewModel.notchStatus {
         case .closed: return 224
         case .peeking: return 480
-        case .opened, .popping: return 600
+        case .opened: return 600
+        case .popping: return 480
         }
     }
 
@@ -64,7 +114,11 @@ struct CoveNotchView: View {
         switch viewModel.notchStatus {
         case .closed: return 32
         case .peeking: return 220
-        case .opened, .popping: return 480
+        case .opened: return 480
+        case .popping:
+            // Question requests need taller real estate for ScrollView +
+            // options + Submit row. Approval (yes/deny/always) stays compact.
+            return viewModel.pendingHookRequest?.kind == .question ? 360 : 120
         }
     }
 
@@ -115,7 +169,7 @@ private struct AdaptiveHeader: View {
                 activeBadge
             }
 
-            if viewModel.notchStatus == .opened || viewModel.notchStatus == .popping {
+            if viewModel.notchStatus == .opened {
                 closeButton
             }
         }

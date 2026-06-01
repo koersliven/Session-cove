@@ -44,6 +44,26 @@ enum StatusMenu {
 
         menu.addItem(.separator())
 
+        if MenuActionTarget.shared.viewModel != nil {
+            let mockApproval = NSMenuItem(
+                title: "Debug: Mock Approval Request",
+                action: #selector(MenuActionTarget.mockApproval(_:)),
+                keyEquivalent: ""
+            )
+            mockApproval.target = MenuActionTarget.shared
+            menu.addItem(mockApproval)
+
+            let mockQuestion = NSMenuItem(
+                title: "Debug: Mock Question Request",
+                action: #selector(MenuActionTarget.mockQuestion(_:)),
+                keyEquivalent: ""
+            )
+            mockQuestion.target = MenuActionTarget.shared
+            menu.addItem(mockQuestion)
+
+            menu.addItem(.separator())
+        }
+
         let quit = NSMenuItem(
             title: "Quit Session Cove",
             action: #selector(MenuActionTarget.quit(_:)),
@@ -58,8 +78,12 @@ enum StatusMenu {
 }
 
 @MainActor
-private final class MenuActionTarget: NSObject {
+final class MenuActionTarget: NSObject {
     static let shared = MenuActionTarget()
+
+    /// Set by WindowManager.setup so debug menu items can drive the live
+    /// CoveViewModel without StatusMenu callers needing to thread it through.
+    weak var viewModel: CoveViewModel?
 
     @objc func openSettings(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
@@ -76,6 +100,14 @@ private final class MenuActionTarget: NSObject {
     @objc func toggleMode(_ sender: Any?) {
         let current = CoveSettings.shared.displayMode
         CoveSettings.shared.displayMode = (current == .pet) ? .notch : .pet
+    }
+
+    @objc func mockApproval(_ sender: Any?) {
+        viewModel?.showMockHookRequest()
+    }
+
+    @objc func mockQuestion(_ sender: Any?) {
+        viewModel?.showMockQuestionRequest()
     }
 
     @objc func quit(_ sender: Any?) {
