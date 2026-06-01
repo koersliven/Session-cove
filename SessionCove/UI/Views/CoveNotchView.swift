@@ -1,153 +1,142 @@
 import SwiftUI
 
-/// Visual content of the Notch panel across its four state-machine states.
-/// `closed` (224×32 notch) → `peeking` (480×220 summary) → `opened` (600×480
-/// harbor preview). `popping` is a permission-ping variant — for PR 4 it
-/// renders the same geometry as `opened` (PR 5/6 wires the cardlet UX).
+/// Visual content of the Notch panel. The hosting NSPanel is constant size
+/// (full screen width × 750pt) and never resizes — all morphing happens inside
+/// `morphingNotch`, a black clipped container whose frame + corner radii
+/// animate across states.
 ///
-/// The shared NotchShape and octopus head use `matchedGeometryEffect` so
-/// SwiftUI morphs them smoothly across state transitions instead of cross-fading.
+/// Design (mirrors ping-island's NotchView):
+/// - One `AdaptiveHeader` instance handles all states (closed/peeking/opened)
+///   so SwiftUI doesn't unmount/remount the header subtree on transitions.
+/// - One `HarborMapOverviewView` instance is shared between peeking + opened
+///   via the `compact` parameter. Without this sharing, `peeking → opened`
+///   tore down ~6 islands × ~3 Timers + multiple `.repeatForever` springs and
+///   rebuilt them, causing the visible "卡顿" lag the user reported.
 struct CoveNotchView: View {
     @Bindable var viewModel: CoveViewModel
-    @Namespace private var animationNamespace
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Color.clear stretches the ZStack to fill the panel; closed-state
-            // content (224×32) then sits at the .top while the rest passes
-            // through (panel.ignoresMouseEvents = true in closed anyway).
             Color.clear
-            content
+            morphingNotch
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(animation(for: viewModel.notchStatus), value: viewModel.notchStatus)
     }
 
-    @ViewBuilder
-    private var content: some View {
+    private var morphingNotch: some View {
+        VStack(spacing: 0) {
+            AdaptiveHeader(viewModel: viewModel)
+
+            if viewModel.notchStatus != .closed {
+                HarborMapOverviewView(
+                    viewModel: viewModel,
+                    showsHeader: false,
+                    compact: viewModel.notchStatus == .peeking,
+                    onAnyIslandTap: viewModel.notchStatus == .peeking
+                        ? { viewModel.notchStatus = .opened }
+                        : nil
+                )
+                // Pure opacity transition for body — anything heavier (scale,
+                // matchedGeometry) compounded with the outer spring animation
+                // visibly stuttered the harbor on insertion. Outgoing fade is
+                // fast so it doesn't drag during the new state's reveal.
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(.easeOut(duration: 0.22)),
+                    removal: .opacity.animation(.easeIn(duration: 0.12))
+                ))
+            }
+        }
+        .frame(width: notchWidth, height: notchHeight, alignment: .top)
+        .background(Color.black)
+        .clipShape(NotchShape(topRadius: topRadius, bottomRadius: bottomRadius))
+        .animation(.spring(response: 0.42, dampingFraction: 0.92), value: viewModel.notchStatus)
+    }
+
+    private var notchWidth: CGFloat {
         switch viewModel.notchStatus {
-        case .closed:
-            ClosedNotchContent(viewModel: viewModel, namespace: animationNamespace)
-                .onTapGesture { viewModel.notchStatus = .opened }
-        case .peeking:
-            PeekingNotchContent(viewModel: viewModel, namespace: animationNamespace)
-                .onTapGesture { viewModel.notchStatus = .opened }
-        case .opened, .popping:
-            OpenedNotchContent(viewModel: viewModel, namespace: animationNamespace)
+        case .closed: return 224
+        case .peeking: return 480
+        case .opened, .popping: return 600
         }
     }
 
-    /// Per-destination spring; matches the spec's animation table (rows 191-200).
-    /// Note: opened → closed (spring 0.45/1.0) and peeking → closed (easeOut)
-    /// share a destination here — PR 4 uses a single closed-spring; PR 5 may
-    /// refine via custom transition modifiers if the difference is perceptible.
-    private func animation(for status: NotchStatus) -> Animation {
-        switch status {
-        case .closed:  return .spring(response: 0.45, dampingFraction: 1.0,  blendDuration: 0)
-        case .peeking: return .spring(response: 0.42, dampingFraction: 0.82, blendDuration: 0)
-        case .opened:  return .spring(response: 0.42, dampingFraction: 0.78, blendDuration: 0)
-        case .popping: return .spring(response: 0.40, dampingFraction: 0.85, blendDuration: 0)
+    private var notchHeight: CGFloat {
+        switch viewModel.notchStatus {
+        case .closed: return 32
+        case .peeking: return 220
+        case .opened, .popping: return 480
+        }
+    }
+
+    private var topRadius: CGFloat {
+        switch viewModel.notchStatus {
+        case .closed: return 6
+        case .peeking: return 14
+        case .opened, .popping: return 19
+        }
+    }
+
+    private var bottomRadius: CGFloat {
+        switch viewModel.notchStatus {
+        case .closed: return 14
+        case .peeking: return 22
+        case .opened, .popping: return 24
         }
     }
 }
 
-// MARK: - Closed state
+// MARK: - Adaptive Header
+//
+// One struct, three visual modes. Single SwiftUI identity means the octopus
+// image, status dot, etc. don't unmount across state transitions — only their
+// frame/padding/visibility change, all of which the outer .animation(_, value:)
+// interpolates smoothly.
 
-private struct ClosedNotchContent: View {
-    let viewModel: CoveViewModel
-    let namespace: Namespace.ID
+private struct AdaptiveHeader: View {
+    @Bindable var viewModel: CoveViewModel
 
     var body: some View {
-        ZStack {
-            NotchShape.closed
-                .fill(Color.black)
-                .matchedGeometryEffect(id: CoveNotchAnimationID.shape, in: namespace)
-            HStack(spacing: 4) {
-                octopusHead
-                    .matchedGeometryEffect(id: CoveNotchAnimationID.octopus, in: namespace)
+        HStack(spacing: spacing) {
+            octopusHead
+
+            if !isClosed {
+                Text("Session Cove")
+                    .font(.system(size: 13, weight: .black, design: .monospaced))
+                    .foregroundStyle(.white)
+            }
+
+            if isClosed {
                 statusDot
             }
-            .padding(.horizontal, 8)
-        }
-        .frame(width: 224, height: 32)
-    }
 
-    @ViewBuilder
-    private var octopusHead: some View {
-        if let image = MascotImage.idle {
-            Image(nsImage: image)
-                .resizable()
-                .interpolation(.none)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 14, height: 14)
-        } else {
-            Image(systemName: "fish.fill")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .foregroundStyle(.white)
-                .frame(width: 14, height: 14)
-        }
-    }
+            Spacer(minLength: 0)
 
-    private var statusDot: some View {
-        Circle()
-            .fill(statusColor)
-            .frame(width: 6, height: 6)
-    }
-
-    private var statusColor: Color {
-        if viewModel.pendingHookRequest != nil { return .yellow }
-        if viewModel.activeSessions > 0 { return .green }
-        return .gray.opacity(0.6)
-    }
-}
-
-// MARK: - Peeking state
-
-private struct PeekingNotchContent: View {
-    let viewModel: CoveViewModel
-    let namespace: Namespace.ID
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            bodyArea
-        }
-        .frame(width: 480, height: 220)
-    }
-
-    private var header: some View {
-        ZStack {
-            NotchShape.opened
-                .fill(Color.black)
-                .matchedGeometryEffect(id: CoveNotchAnimationID.shape, in: namespace)
-            HStack(spacing: 8) {
-                octopusHead
-                    .matchedGeometryEffect(id: CoveNotchAnimationID.octopus, in: namespace)
-                Text("Session Cove")
-                    .font(.system(size: 11, weight: .black, design: .monospaced))
-                    .foregroundStyle(.white)
-                Spacer()
-                if viewModel.activeSessions > 0 {
-                    activeBadge
-                }
+            if viewModel.notchStatus == .peeking, viewModel.activeSessions > 0 {
+                activeBadge
             }
-            .padding(.horizontal, 14)
+
+            if viewModel.notchStatus == .opened || viewModel.notchStatus == .popping {
+                closeButton
+            }
         }
-        .frame(height: 44)
+        .padding(.horizontal, horizontalPadding)
+        .frame(height: height)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            switch viewModel.notchStatus {
+            case .closed, .peeking:
+                viewModel.notchStatus = .opened
+            default:
+                break
+            }
+        }
     }
 
-    private var bodyArea: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let request = viewModel.pendingHookRequest {
-                permissionBadge(request)
-            }
-            sessionList
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.black.opacity(0.92))
-    }
+    private var isClosed: Bool { viewModel.notchStatus == .closed }
+    private var spacing: CGFloat { isClosed ? 4 : 10 }
+    private var horizontalPadding: CGFloat { isClosed ? 8 : 16 }
+    private var height: CGFloat { isClosed ? 32 : 60 }
+    private var octopusSize: CGFloat { isClosed ? 14 : 22 }
 
     private var octopusHead: some View {
         Group {
@@ -163,7 +152,19 @@ private struct PeekingNotchContent: View {
                     .foregroundStyle(.white)
             }
         }
-        .frame(width: 18, height: 18)
+        .frame(width: octopusSize, height: octopusSize)
+    }
+
+    private var statusDot: some View {
+        Circle()
+            .fill(statusColor)
+            .frame(width: 6, height: 6)
+    }
+
+    private var statusColor: Color {
+        if viewModel.pendingHookRequest != nil { return .yellow }
+        if viewModel.activeSessions > 0 { return .green }
+        return .gray.opacity(0.6)
     }
 
     private var activeBadge: some View {
@@ -178,146 +179,16 @@ private struct PeekingNotchContent: View {
         .background(Capsule().fill(.green.opacity(0.12)))
     }
 
-    private func permissionBadge(_ request: HookPermissionRequest) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Circle().fill(.yellow).frame(width: 6, height: 6).padding(.top, 4)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Permission")
-                    .font(.system(size: 8, weight: .black, design: .monospaced))
-                    .foregroundStyle(.yellow.opacity(0.8))
-                Text(request.summary)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-            }
-            Spacer()
+    private var closeButton: some View {
+        Button {
+            viewModel.notchStatus = .closed
+        } label: {
+            Text("×")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white.opacity(0.6))
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(.white.opacity(0.08)))
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 4).fill(.yellow.opacity(0.1)))
+        .buttonStyle(.plain)
     }
-
-    private var sessionList: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("RUNNING")
-                .font(.system(size: 8, weight: .black, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.5))
-            if rankedIslands.isEmpty {
-                Text("No active sessions")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.4))
-            } else {
-                ForEach(rankedIslands) { island in
-                    IslandSummaryRow(island: island, compact: true)
-                }
-            }
-        }
-    }
-
-    private var rankedIslands: [ProjectIsland] {
-        viewModel.islands
-            .sorted { lhs, rhs in
-                if lhs.activeCount != rhs.activeCount { return lhs.activeCount > rhs.activeCount }
-                return lhs.recentCount > rhs.recentCount
-            }
-            .prefix(3)
-            .map { $0 }
-    }
-}
-
-// MARK: - Opened state
-
-private struct OpenedNotchContent: View {
-    let viewModel: CoveViewModel
-    let namespace: Namespace.ID
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            bodyArea
-        }
-        .frame(width: 600, height: 480)
-    }
-
-    private var header: some View {
-        ZStack {
-            NotchShape.opened
-                .fill(Color.black)
-                .matchedGeometryEffect(id: CoveNotchAnimationID.shape, in: namespace)
-            HStack(spacing: 10) {
-                octopusHead
-                    .matchedGeometryEffect(id: CoveNotchAnimationID.octopus, in: namespace)
-                Text("Session Cove")
-                    .font(.system(size: 13, weight: .black, design: .monospaced))
-                    .foregroundStyle(.white)
-                Spacer()
-                Button {
-                    viewModel.notchStatus = .closed
-                } label: {
-                    Text("×")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(.white.opacity(0.08)))
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 16)
-        }
-        .frame(height: 60)
-    }
-
-    private var bodyArea: some View {
-        HarborMapOverviewView(viewModel: viewModel, showsHeader: false)
-    }
-
-    private var octopusHead: some View {
-        Group {
-            if let image = MascotImage.idle {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.none)
-                    .aspectRatio(contentMode: .fit)
-            } else {
-                Image(systemName: "fish.fill")
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .foregroundStyle(.white)
-            }
-        }
-        .frame(width: 22, height: 22)
-    }
-}
-
-// MARK: - Shared row
-
-private struct IslandSummaryRow: View {
-    let island: ProjectIsland
-    let compact: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(island.activeCount > 0 ? .green : .gray.opacity(0.6))
-                .frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
-            Text(island.displayName)
-                .font(.system(size: compact ? 10 : 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.85))
-                .lineLimit(1)
-            Spacer()
-            Text("\(island.activeCount)/\(island.totalCount)")
-                .font(.system(size: compact ? 9 : 10, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.5))
-        }
-        .padding(.vertical, compact ? 2 : 4)
-        .padding(.horizontal, compact ? 4 : 8)
-        .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(compact ? 0 : 0.04)))
-    }
-}
-
-// MARK: - Animation IDs
-
-private enum CoveNotchAnimationID {
-    static let shape = "notchShape"
-    static let octopus = "notchOctopus"
 }

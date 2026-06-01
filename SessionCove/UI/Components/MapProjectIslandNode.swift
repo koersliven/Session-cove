@@ -4,6 +4,13 @@ struct MapProjectIslandNode: View {
     let island: ProjectIsland
     var isSelected: Bool = false
     var hasPendingPermission: Bool = false
+    /// Compact mode strips heavyweight ambient animations (seaweed, bubble
+    /// emitters, sparkles, hover scale springs) so the node can be rendered
+    /// 6× in the 480-pt-wide notch peeking panel without dropping frames.
+    /// The selection glow + spotlight are kept since they are state cues, not
+    /// decoration. Caller should also avoid wiring multi-second animations on
+    /// this node — they coexist at 6× density.
+    var compact: Bool = false
     let onTap: () -> Void
 
     @State private var isHovered = false
@@ -12,6 +19,14 @@ struct MapProjectIslandNode: View {
     @State private var floatOffset: CGFloat = 0
     @State private var spotlightWidth: CGFloat = 0
     @State private var heartTick: Int = 0
+    /// Gates the heavyweight ambient animations (seaweed sway, bubble emitters,
+    /// sparkles, selection .repeatForever springs) so they only spin up *after*
+    /// the outer notch spring has finished morphing. Without this gate, peeking
+    /// → opened triggers ~18 .repeatForever / Timer animations on the same
+    /// frame the panel spring kicks off, dragging the morph below 30fps.
+    /// 600ms ≈ outer spring (response 0.42 ≈ 1.5×) plus a buffer so the spring
+    /// tail doesn't compete with the .repeatForever commits.
+    @State private var ambientReady = false
 
     var body: some View {
         Button(action: onTap) {
@@ -27,9 +42,10 @@ struct MapProjectIslandNode: View {
                         .brightness(isSelected ? islandMood.brightness + 0.08 : islandMood.brightness)
 
                     CoveMascotView(state: mascotState, scale: .row)
-                        .offset(y: isSelected ? 4 + floatOffset : 4)
+                        .scaleEffect(compact ? 0.55 : 1.0)
+                        .offset(y: (isSelected ? 4 + floatOffset : 4) * (compact ? 0.55 : 1.0))
 
-                    if island.activeCount > 0 {
+                    if island.activeCount > 0 && ambientReady {
                         ZStack {
                             ActiveSeaweed()
                             ActiveIslandBubbles()
@@ -46,7 +62,7 @@ struct MapProjectIslandNode: View {
                             .offset(x: -18, y: -14)
                     }
 
-                    if isSelected {
+                    if isSelected && ambientReady {
                         SelectionSparkles(phase: sparklePhase)
                         FloatingBubbles(tick: heartTick)
                     }
@@ -59,29 +75,37 @@ struct MapProjectIslandNode: View {
                     .padding(.top, 2)
                     .shadow(color: isSelected ? Color(red: 0.4, green: 0.9, blue: 1.0).opacity(0.8) : .clear, radius: 4)
             }
-            .scaleEffect(isHovered ? 1.12 : (isSelected ? 1.22 : 1.0))
-            .animation(.interpolatingSpring(stiffness: 200, damping: 8), value: isSelected)
-            .animation(.snappy(duration: 0.14), value: isHovered)
+            .scaleEffect(compact ? 1.0 : (isHovered ? 1.12 : (isSelected ? 1.22 : 1.0)))
+            .animation(compact ? nil : .interpolatingSpring(stiffness: 200, damping: 8), value: isSelected)
+            .animation(compact ? nil : .snappy(duration: 0.14), value: isHovered)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            // Compact mode skips the hover state entirely; we don't even record
+            // it, otherwise SwiftUI still invalidates this view's body on every
+            // mouse-cross even though the scaleEffect ignores the value.
+            guard !compact else { return }
+            isHovered = hovering
+        }
         .onChange(of: isSelected) { _, selected in
+            // Selection glow (spotlight + selectionGlow) ramps in/out
+            // immediately so the highlight isn't visibly delayed by the
+            // ambientReady gate. The multi-second .repeatForever springs that
+            // drive the sparkle/pulse/float animations are deferred behind
+            // ambientReady — onChange(of: ambientReady) below picks them up.
+            guard !compact else {
+                spotlightWidth = selected ? 1 : 0
+                return
+            }
             if selected {
                 spotlightWidth = 0
                 withAnimation(.easeOut(duration: 0.4)) {
                     spotlightWidth = 1
                 }
-                withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
-                    sparklePhase = 1
+                if ambientReady {
+                    startSelectionAmbients()
                 }
-                withAnimation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true)) {
-                    pulsePhase = 1
-                }
-                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
-                    floatOffset = -3.5
-                }
-                startHeartEmission()
             } else {
                 withAnimation(.easeIn(duration: 0.2)) {
                     spotlightWidth = 0
@@ -91,6 +115,47 @@ struct MapProjectIslandNode: View {
                 floatOffset = 0
             }
         }
+        .onChange(of: ambientReady) { _, ready in
+            // Catch the case where this island is already selected when the
+            // gate opens (peeking→opened with a pre-selected island, or first
+            // appearance with viewModel.highlightedIsland set). Without this,
+            // the .repeatForever springs would never start.
+            guard ready, !compact, isSelected else { return }
+            if spotlightWidth < 1 {
+                withAnimation(.easeOut(duration: 0.4)) {
+                    spotlightWidth = 1
+                }
+            }
+            startSelectionAmbients()
+        }
+        .task(id: compact) {
+            if compact {
+                ambientReady = false
+                return
+            }
+            // Match NotchWindowController's 600ms isAnimating gate. Even on
+            // closed → opened (no peeking transit), the outer panel spring is
+            // mid-flight on this view's onAppear, so we delay regardless.
+            do {
+                try await Task.sleep(nanoseconds: 600_000_000)
+            } catch {
+                return
+            }
+            ambientReady = true
+        }
+    }
+
+    private func startSelectionAmbients() {
+        withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
+            sparklePhase = 1
+        }
+        withAnimation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true)) {
+            pulsePhase = 1
+        }
+        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+            floatOffset = -3.5
+        }
+        startHeartEmission()
     }
 
     private func startHeartEmission() {

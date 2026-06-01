@@ -36,6 +36,117 @@ enum PixelPalette {
     static let seahorse = Color(red: 1.0, green: 0.70, blue: 0.28)
 }
 
+// Rasterizes pixel-art sprites once into NSImage and reuses the cached bitmap
+// for every render. Replaces ~8000 SwiftUI Rectangle views (one per pixel ×
+// shadow underlay × multiple instances) with a single Image draw, eliminating
+// the dominant per-frame cost during notch morph and island ambient animation.
+@MainActor
+enum PixelSpriteCache {
+    private static var islandCache: [IslandMood: NSImage] = [:]
+    private static var octopusCache: [PixelMascotState: NSImage] = [:]
+    private static var seaLifeCache: [SeaLifeKind: NSImage] = [:]
+
+    static func island(mood: IslandMood) -> NSImage {
+        if let cached = islandCache[mood] { return cached }
+        let image = rasterize(rows: PixelIslandSprite.rows) { token in
+            switch token {
+            case "S": mood.sand
+            case "G": mood.grass
+            case "L": mood.palm
+            case "T": PixelPalette.trunk
+            case "R": mood.rock
+            case "O": PixelPalette.ink.opacity(0.70)
+            default: .clear
+            }
+        }
+        islandCache[mood] = image
+        return image
+    }
+
+    static func octopus(state: PixelMascotState) -> NSImage {
+        if let cached = octopusCache[state] { return cached }
+        let image = rasterize(rows: PixelOctopusSprite.rows(for: state)) { token in
+            switch token {
+            case "O": PixelPalette.octo
+            case "L": PixelPalette.octoLight
+            case "D": PixelPalette.octoDark
+            case "H": PixelPalette.headphone
+            case "B": PixelPalette.headphoneDark
+            case "E": PixelPalette.ink.opacity(0.84)
+            case "W": PixelPalette.ink.opacity(0.7)
+            case "M": PixelPalette.ink
+            case "S": PixelPalette.screen
+            case "-": PixelPalette.ink.opacity(0.76)
+            case "Z": .white.opacity(0.82)
+            default: .clear
+            }
+        }
+        octopusCache[state] = image
+        return image
+    }
+
+    static func seaLife(kind: SeaLifeKind) -> NSImage {
+        if let cached = seaLifeCache[kind] { return cached }
+        let image = rasterize(rows: SeaLifeSprite.rows(for: kind)) { token in
+            switch token {
+            case "J": PixelPalette.jelly
+            case "H": PixelPalette.foam.opacity(0.86)
+            case "j": PixelPalette.jelly.opacity(0.62)
+            case "T": PixelPalette.jelly.opacity(0.96)
+            case "S": PixelPalette.seahorse
+            case "C": Color(red: 1.0, green: 0.38, blue: 0.20)
+            case "P": Color(red: 1.0, green: 0.46, blue: 0.68)
+            case "R": Color(red: 0.96, green: 0.14, blue: 0.12)
+            case "B": Color(red: 0.58, green: 0.30, blue: 0.18)
+            case "K": Color(red: 0.20, green: 0.78, blue: 0.45)
+            case "F": Color(red: 0.50, green: 0.96, blue: 1.0)
+            case "f": Color(red: 0.10, green: 0.58, blue: 0.92)
+            default: .clear
+            }
+        }
+        seaLifeCache[kind] = image
+        return image
+    }
+
+    private static func rasterize(rows: [String], unit: CGFloat = 4, color: (Character) -> Color) -> NSImage {
+        let columns = rows.map(\.count).max() ?? 1
+        let pixelWidth = Int(CGFloat(columns) * unit)
+        let pixelHeight = Int(CGFloat(rows.count) * unit)
+        let nsSize = NSSize(width: pixelWidth, height: pixelHeight)
+        guard pixelWidth > 0, pixelHeight > 0,
+              let context = CGContext(
+                data: nil,
+                width: pixelWidth,
+                height: pixelHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return NSImage(size: nsSize)
+        }
+        let shadow = NSColor(PixelPalette.ink.opacity(0.18)).cgColor
+        for (rowIndex, row) in rows.enumerated() {
+            // CGContext origin is bottom-left; rows[0] should appear at the top
+            // visually, so map row 0 to the highest y coordinate.
+            let yCG = CGFloat(rows.count - 1 - rowIndex) * unit
+            for (columnIndex, token) in row.enumerated() {
+                let fill = color(token)
+                if fill == .clear { continue }
+                let x = CGFloat(columnIndex) * unit
+                context.setFillColor(shadow)
+                context.fill(CGRect(x: x + 1, y: yCG - 1, width: unit, height: unit))
+                context.setFillColor(NSColor(fill).cgColor)
+                context.fill(CGRect(x: x, y: yCG, width: unit, height: unit))
+            }
+        }
+        guard let cgImage = context.makeImage() else {
+            return NSImage(size: nsSize)
+        }
+        return NSImage(cgImage: cgImage, size: nsSize)
+    }
+}
+
 struct PixelOceanBackground: View {
     var body: some View {
         GeometryReader { geo in
@@ -57,6 +168,12 @@ struct PixelOceanBackground: View {
                 PixelSeaLifeLayer()
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // Rasterize the entire static ocean (gradient + water Canvas + sea
+            // life sprites) into a single GPU-backed offscreen buffer. Without
+            // this, the outer notch spring re-runs the 12pt water texture loop
+            // (760–2000 fillRect calls) and re-walks the ~4000 Rectangle
+            // sprites in PixelSeaLifeLayer on every frame of the morph.
+            .drawingGroup()
         }
         .background(PixelPalette.ocean0)
         .allowsHitTesting(false)
@@ -165,7 +282,7 @@ enum SeaLifeKind {
 struct SeaLifeSprite: View {
     let kind: SeaLifeKind
 
-    private var rows: [String] {
+    static func rows(for kind: SeaLifeKind) -> [String] {
         switch kind {
         case .jellyfish:
             [
@@ -254,23 +371,10 @@ struct SeaLifeSprite: View {
     }
 
     var body: some View {
-        PixelGridSprite(rows: rows) { token in
-            switch token {
-            case "J": PixelPalette.jelly
-            case "H": PixelPalette.foam.opacity(0.86)
-            case "j": PixelPalette.jelly.opacity(0.62)
-            case "T": PixelPalette.jelly.opacity(0.96)
-            case "S": PixelPalette.seahorse
-            case "C": Color(red: 1.0, green: 0.38, blue: 0.20)
-            case "P": Color(red: 1.0, green: 0.46, blue: 0.68)
-            case "R": Color(red: 0.96, green: 0.14, blue: 0.12)
-            case "B": Color(red: 0.58, green: 0.30, blue: 0.18)
-            case "K": Color(red: 0.20, green: 0.78, blue: 0.45)
-            case "F": Color(red: 0.50, green: 0.96, blue: 1.0)
-            case "f": Color(red: 0.10, green: 0.58, blue: 0.92)
-            default: .clear
-            }
-        }
+        Image(nsImage: PixelSpriteCache.seaLife(kind: kind))
+            .resizable()
+            .interpolation(.none)
+            .aspectRatio(contentMode: .fit)
     }
 }
 
@@ -315,7 +419,7 @@ struct PixelBox: View {
 struct PixelIslandSprite: View {
     var mood: IslandMood = .recent
 
-    private let fallbackMap: [String] = [
+    static let rows: [String] = [
         ".............................",
         ".............................",
         "....................L........",
@@ -336,25 +440,17 @@ struct PixelIslandSprite: View {
     ]
 
     var body: some View {
-        PixelGridSprite(rows: fallbackMap) { token in
-            switch token {
-            case "S": mood.sand
-            case "G": mood.grass
-            case "L": mood.palm
-            case "T": PixelPalette.trunk
-            case "R": mood.rock
-            case "O": PixelPalette.ink.opacity(0.70)
-            default: .clear
-            }
-        }
-        .aspectRatio(29 / 17, contentMode: .fit)
+        Image(nsImage: PixelSpriteCache.island(mood: mood))
+            .resizable()
+            .interpolation(.none)
+            .aspectRatio(contentMode: .fit)
     }
 }
 
 struct PixelOctopusSprite: View {
     var state: PixelMascotState = .working
 
-    private var fallbackMap: [String] {
+    static func rows(for state: PixelMascotState) -> [String] {
         switch state {
         case .working, .idle, .attention:
             [
@@ -409,23 +505,10 @@ struct PixelOctopusSprite: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            PixelGridSprite(rows: fallbackMap) { token in
-                switch token {
-                case "O": PixelPalette.octo
-                case "L": PixelPalette.octoLight
-                case "D": PixelPalette.octoDark
-                case "H": PixelPalette.headphone
-                case "B": PixelPalette.headphoneDark
-                case "E": PixelPalette.ink.opacity(0.84)
-                case "W": PixelPalette.ink.opacity(0.7)
-                case "M": PixelPalette.ink
-                case "S": PixelPalette.screen
-                case "-": PixelPalette.ink.opacity(0.76)
-                case "Z": .white.opacity(0.82)
-                default: .clear
-                }
-            }
-            .aspectRatio(16 / 13, contentMode: .fit)
+            Image(nsImage: PixelSpriteCache.octopus(state: state))
+                .resizable()
+                .interpolation(.none)
+                .aspectRatio(contentMode: .fit)
 
             if state == .attention {
                 Text("!")
@@ -433,39 +516,6 @@ struct PixelOctopusSprite: View {
                     .foregroundStyle(PixelPalette.alert)
                     .shadow(color: PixelPalette.ink, radius: 0, x: 1, y: 1)
                     .offset(x: -4, y: 0)
-            }
-        }
-    }
-}
-
-struct PixelGridSprite: View {
-    let rows: [String]
-    let color: (Character) -> Color
-
-    var body: some View {
-        GeometryReader { geo in
-            let columns = rows.map(\.count).max() ?? 1
-            let unit = max(1, floor(min(geo.size.width / CGFloat(columns), geo.size.height / CGFloat(rows.count))))
-            let xOffset = floor((geo.size.width - CGFloat(columns) * unit) / 2)
-            let yOffset = floor((geo.size.height - CGFloat(rows.count) * unit) / 2)
-            ZStack(alignment: .topLeading) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
-                    ForEach(Array(Array(row).enumerated()), id: \.offset) { columnIndex, token in
-                        let fill = color(token)
-                        if fill != .clear {
-                            let x = xOffset + CGFloat(columnIndex) * unit
-                            let y = yOffset + CGFloat(rowIndex) * unit
-                            Rectangle()
-                                .fill(PixelPalette.ink.opacity(0.18))
-                                .frame(width: unit, height: unit)
-                                .offset(x: x + 1, y: y + 1)
-                            Rectangle()
-                                .fill(fill)
-                                .frame(width: unit, height: unit)
-                                .offset(x: x, y: y)
-                        }
-                    }
-                }
             }
         }
     }

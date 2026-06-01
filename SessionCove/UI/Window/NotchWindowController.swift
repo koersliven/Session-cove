@@ -13,6 +13,7 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
     private let hoverDetector = NotchHoverDetector()
     private var outsideClickMonitor: Any?
     private var rightClickMonitor: Any?
+    private var rightClickLocalMonitor: Any?
     /// Direct activeSpaceDidChange listener for "Mission Control / Space switch
     /// → instant close". FullscreenAppDetector also subscribes to the same
     /// notification but only updates `isFullscreen`; we need a separate hook to
@@ -78,9 +79,13 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
             if let event = NSApp.currentEvent, MouseEventReplay.isReplayed(event) { return }
             MainActor.assumeIsolated {
-                guard let self, let panel = self.panel else { return }
+                guard let self, let screen = self.currentScreen() else { return }
                 let loc = NSEvent.mouseLocation
-                if !panel.frame.contains(loc) {
+                // Panel is fullWidth × 750 always, but only the visible notch
+                // graphic should count as "inside" — clicks on the surrounding
+                // transparent panel area should still close the opened notch.
+                let visible = self.visibleNotchScreenRect(for: self.viewModel.notchStatus, on: screen)
+                if !visible.contains(loc) {
                     if self.viewModel.notchStatus == .opened {
                         self.viewModel.notchStatus = .closed
                     }
@@ -90,18 +95,38 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
 
         // Right-click anywhere on the notch panel pops the StatusMenu so users
         // can switch back to .pet mode (or hit Settings / Quit) without having
-        // to find the menu bar icon. Closed state is `ignoresMouseEvents=true`
-        // so a panel-local view monitor would never see the event — the click
-        // routes past the panel to whatever is behind. A global monitor catches
-        // the event regardless and we hit-test against `panel.frame` ourselves.
+        // to find the menu bar icon. We need BOTH monitors:
+        //   - GLOBAL: closed state has `ignoresMouseEvents = true`, so the click
+        //     is routed to whichever app sits behind the notch (menu bar /
+        //     desktop). Global monitors only fire for events delivered to other
+        //     apps, which is exactly this case.
+        //   - LOCAL: peeking/opened state has `ignoresMouseEvents = false`, so
+        //     our panel intercepts the event and global never fires. Local
+        //     monitors run inside the current app and let us swallow the event
+        //     by returning nil so the panel's default handling doesn't re-fire.
+        // Two-finger tap (secondary click) routes through the same NSEvent path
+        // as a real right-click, so this covers both gestures.
         rightClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] _ in
             if let event = NSApp.currentEvent, MouseEventReplay.isReplayed(event) { return }
             MainActor.assumeIsolated {
-                guard let self, let panel = self.panel else { return }
+                guard let self, let screen = self.currentScreen() else { return }
                 let loc = NSEvent.mouseLocation
-                guard panel.frame.contains(loc) else { return }
+                let visible = self.visibleNotchScreenRect(for: self.viewModel.notchStatus, on: screen)
+                guard visible.contains(loc) else { return }
                 let menu = StatusMenu.build(target: nil)
                 menu.popUp(positioning: nil, at: loc, in: nil)
+            }
+        }
+        rightClickLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event -> NSEvent? in
+            MainActor.assumeIsolated {
+                if MouseEventReplay.isReplayed(event) { return event }
+                guard let self, let screen = self.currentScreen() else { return event }
+                let loc = NSEvent.mouseLocation
+                let visible = self.visibleNotchScreenRect(for: self.viewModel.notchStatus, on: screen)
+                guard visible.contains(loc) else { return event }
+                let menu = StatusMenu.build(target: nil)
+                menu.popUp(positioning: nil, at: loc, in: nil)
+                return nil
             }
         }
 
@@ -141,10 +166,15 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
                         panel.animator().alphaValue = 1
                     }
                 } else {
-                    // Exit fullscreen: restore alpha and reapply the current
-                    // status so the panel frame snaps back to the canonical
-                    // position for that NotchStatus.
+                    // Exit fullscreen: restore alpha and snap the panel back to
+                    // its canonical fullWidth × 750 frame (in case slideUp shifted
+                    // it). Constant-panel architecture means applyNotchStatus
+                    // doesn't reset frames itself, so we do it explicitly here.
                     panel.animator().alphaValue = 1
+                    if let screen = self.currentScreen() {
+                        let canonical = NotchPlacementStrategy.panelFrame(for: screen)
+                        panel.animator().setFrame(canonical, display: true)
+                    }
                     self.applyNotchStatus(self.viewModel.notchStatus)
                 }
             }
@@ -190,6 +220,10 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         if let monitor = rightClickMonitor {
             NSEvent.removeMonitor(monitor)
             rightClickMonitor = nil
+        }
+        if let monitor = rightClickLocalMonitor {
+            NSEvent.removeMonitor(monitor)
+            rightClickLocalMonitor = nil
         }
         if let token = screenObserverToken {
             ScreenObserver.shared.unsubscribe(token)
@@ -247,6 +281,14 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         } completionHandler: { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                // Repin to whichever screen is now active. With the constant-panel
+                // architecture, applyNotchStatus no longer touches the panel
+                // frame, so we set it explicitly for the new screen here.
+                if let screen = self.currentScreen() {
+                    let canonical = NotchPlacementStrategy.panelFrame(for: screen)
+                    self.panel?.setFrame(canonical, display: true, animate: false)
+                    self.hostingView?.frame = NSRect(origin: .zero, size: canonical.size)
+                }
                 self.applyNotchStatus(self.viewModel.notchStatus)
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = 0.110
@@ -278,14 +320,19 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
     func applyNotchStatus(_ status: NotchStatus) {
         guard let panel, let screen = currentScreen() else { return }
 
+        // Cancel any in-flight debounced enter/exit before raising the
+        // animation gate. Without this a stale `pendingExitWork` fired during
+        // a programmatic status change (e.g. island tap → opened) would
+        // immediately retarget the spring back to closed mid-flight.
+        hoverDetector.cancelPending()
         hoverDetector.isAnimating = true
 
-        let targetFrame = self.targetFrame(for: status, on: screen)
-        // animate: false — AppKit's animator curve is harsh; SwiftUI animates
-        // the content morph via the .animation(_, value:) modifier in CoveNotchView.
-        panel.setFrame(targetFrame, display: true, animate: false)
-        hostingView?.frame = NSRect(origin: .zero, size: targetFrame.size)
-
+        // Constant-panel architecture: the NSPanel stays at fullWidth × 750 in
+        // every state. All visual morphing happens inside SwiftUI via
+        // `clipShape(NotchShape)` + `.frame(width:height:)` interpolation in
+        // CoveNotchView. This eliminates the screen-top-left flash that
+        // happened when AppKit redrew SwiftUI's outgoing snapshot at the
+        // newly-resized panel's origin.
         switch status {
         case .closed:
             // Full passthrough: menu bar receives clicks behind the notch.
@@ -293,15 +340,16 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
             hostingView?.hitTestRectProvider = { [] }
             hoverDetector.setNotchScreenRect(closedHoverZone(on: screen))
         case .peeking, .opened, .popping:
-            // Panel intercepts events inside its bounds; the hover hot zone
-            // expands to cover the entire panel so moving inside content
-            // doesn't trigger a spurious "exit".
+            // Panel intercepts events only inside the visible notch graphic;
+            // the surrounding transparent panel area passes through. Hover hot
+            // zone matches the visible-notch screen rect so moving inside the
+            // visible content doesn't trigger a spurious "exit".
             panel.ignoresMouseEvents = false
             hostingView?.hitTestRectProvider = { [weak self] in
-                guard let bounds = self?.hostingView?.bounds else { return [] }
-                return [bounds]
+                guard let self else { return [] }
+                return [self.visibleNotchPanelRect(for: status)]
             }
-            hoverDetector.setNotchScreenRect(panel.frame)
+            hoverDetector.setNotchScreenRect(visibleNotchScreenRect(for: status, on: screen))
         }
 
         switch status {
@@ -313,69 +361,70 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
             break
         }
 
-        // Clear isAnimating after the longest spring duration with slack —
-        // peeking → opened is 320ms per spec; 420ms gives the spring room
-        // to settle before we accept hover events again.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
+        // Clear isAnimating + force a hover re-evaluation. 600ms matches the
+        // SwiftUI spring's flight time (response 0.42 ≈ 1.5× = 630ms). Earlier
+        // gate clears (e.g. 200ms) leave hoverDetector responding to cursor
+        // wobble while the spring is still mid-flight, causing the "伸到一半又
+        // 缩回" jitter. The re-evaluation is essential: if cursor parked inside
+        // the new hot zone during the gate, no mouseMoved would fire post-gate.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.60) { [weak self] in
             MainActor.assumeIsolated {
-                self?.hoverDetector.isAnimating = false
+                self?.hoverDetector.clearAnimatingAndReevaluate()
             }
         }
     }
 
     // MARK: - Geometry
 
-    private func targetFrame(for status: NotchStatus, on screen: NSScreen) -> NSRect {
-        let frame = screen.frame
+    /// Visible notch graphic dimensions for each state. The panel itself is
+    /// always fullWidth × 750; these sizes describe the morphing black-clipped
+    /// container inside SwiftUI. Mirror the values in CoveNotchView so the
+    /// hit-test rects stay in lockstep with the visual.
+    private func visibleNotchSize(for status: NotchStatus) -> CGSize {
         switch status {
-        case .closed:
-            // PR 3 baseline: full-screen-width × 750 panel anchored top so the
-            // notch graphic itself sits flush with the menu bar.
-            // panelFrame(for:) already integer-ceils internally, but route
-            // through ceilFrame for symmetry with the other cases.
-            return ceilFrame(NotchPlacementStrategy.panelFrame(for: screen))
-        case .peeking:
-            let w: CGFloat = 480
-            let h: CGFloat = 220
-            return ceilFrame(NSRect(
-                x: frame.midX - w / 2,
-                y: frame.maxY - h,
-                width: w,
-                height: h
-            ))
-        case .opened, .popping:
-            // Spec mentions opened height as `min(720, measured)`; measuring
-            // requires a layout pass. PR 4 uses a fixed 480; PR 5 can refine.
-            let w: CGFloat = 600
-            let h: CGFloat = 480
-            return ceilFrame(NSRect(
-                x: frame.midX - w / 2,
-                y: frame.maxY - h,
-                width: w,
-                height: h
-            ))
+        case .closed: return CGSize(width: 224, height: 32)
+        case .peeking: return CGSize(width: 480, height: 220)
+        case .opened, .popping: return CGSize(width: 600, height: 480)
         }
     }
 
-    /// Snap an NSRect to integer pixels. Avoids half-pixel shimmer on Retina /
-    /// fractional-DPI external displays where `frame.midX - w / 2` can return
-    /// a fractional origin. PR 6.T edge case 5.
-    private func ceilFrame(_ rect: NSRect) -> NSRect {
-        NSRect(
-            x: ceil(rect.origin.x),
-            y: ceil(rect.origin.y),
-            width: ceil(rect.size.width),
-            height: ceil(rect.size.height)
+    /// Visible notch rect in panel-local (bottom-left origin) coords, suitable
+    /// for `PassThroughHostingView.hitTestRectProvider`. Top-aligned within
+    /// the panel; horizontally centered.
+    private func visibleNotchPanelRect(for status: NotchStatus) -> NSRect {
+        guard let panel = panel else { return .zero }
+        let size = visibleNotchSize(for: status)
+        return NSRect(
+            x: panel.frame.width / 2 - size.width / 2,
+            y: panel.frame.height - size.height,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    /// Visible notch rect in screen coords. Used by hover detector +
+    /// outside-click + right-click handlers so they only react to the actual
+    /// visible notch graphic, not the invisible fullWidth panel surrounding it.
+    private func visibleNotchScreenRect(for status: NotchStatus, on screen: NSScreen) -> NSRect {
+        let size = visibleNotchSize(for: status)
+        return NSRect(
+            x: screen.frame.midX - size.width / 2,
+            y: screen.frame.maxY - size.height,
+            width: size.width,
+            height: size.height
         )
     }
 
     /// Hot zone for closed state: the area directly under the physical notch
-    /// in screen coordinates, slightly enlarged vertically (36pt vs 32pt) for
-    /// forgiving hover.
+    /// in screen coordinates. Aggressive sizing — width is `notch + 100pt` on
+    /// each-side-bias-friendly basis (so off-center hovers near the menu bar
+    /// items still trigger), height 44pt (vs the 32pt visual notch) for a
+    /// forgiving vertical band. Total ≈ 320×44 on a 14" MacBook Pro.
     private func closedHoverZone(on screen: NSScreen) -> NSRect {
         let metrics = screen.notchMetrics ?? .fallback
-        let hotW = max(metrics.width, ScreenNotchMetrics.fallback.width)
-        let hotH: CGFloat = 36
+        let baseW = max(metrics.width, ScreenNotchMetrics.fallback.width)
+        let hotW = max(baseW + 100, 320)
+        let hotH: CGFloat = 44
         return NSRect(
             x: screen.frame.midX - hotW / 2,
             y: screen.frame.maxY - hotH,
@@ -408,6 +457,9 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
                 NSEvent.removeMonitor(monitor)
             }
             if let monitor = rightClickMonitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            if let monitor = rightClickLocalMonitor {
                 NSEvent.removeMonitor(monitor)
             }
             if let token = fullscreenToken {

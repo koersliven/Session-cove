@@ -3,6 +3,14 @@ import SwiftUI
 struct HarborMapOverviewView: View {
     @Bindable var viewModel: CoveViewModel
     var showsHeader: Bool = true
+    /// Compact mode: hides the session dock and shrinks island nodes so the
+    /// view fits inside the notch peeking panel (480×~176pt body area). The
+    /// island node positions are relative to the container, so they scale
+    /// naturally — only the node sprites themselves need explicit shrinking.
+    var compact: Bool = false
+    /// Fires when any island node is tapped. Peeking notch wires this to
+    /// escalate to `.opened`, so a click on the mini harbor expands to full.
+    var onAnyIslandTap: (() -> Void)? = nil
     @State private var mapPage: MapPage = .main
 
     private enum MapPage {
@@ -34,7 +42,7 @@ struct HarborMapOverviewView: View {
         VStack(spacing: 0) {
             if showsHeader { mapHeader }
             mapArea
-            sessionDock
+            if !compact { sessionDock }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background { PixelOceanBackground() }
@@ -115,14 +123,18 @@ struct HarborMapOverviewView: View {
                     island: island,
                     isSelected: isSelected,
                     hasPendingPermission: viewModel.pendingHookRequest?.projectPath == island.path,
-                    onTap: { viewModel.highlightIsland(island) }
+                    compact: compact,
+                    onTap: {
+                        viewModel.highlightIsland(island)
+                        onAnyIslandTap?()
+                    }
                 )
                 .frame(width: nodeSize(for: island, selected: isSelected).width,
                        height: nodeSize(for: island, selected: isSelected).height)
                 .position(pos)
             }
 
-            if hiddenCount > 0 {
+            if hiddenCount > 0 && !compact {
                 moreReefButton(remaining: hiddenCount)
                     .position(x: size.width * 0.88, y: size.height * 0.22)
             }
@@ -140,7 +152,11 @@ struct HarborMapOverviewView: View {
                     island: island,
                     isSelected: isSelected,
                     hasPendingPermission: viewModel.pendingHookRequest?.projectPath == island.path,
-                    onTap: { viewModel.highlightIsland(island) },
+                    compact: compact,
+                    onTap: {
+                        viewModel.highlightIsland(island)
+                        onAnyIslandTap?()
+                    },
                     size: nodeSize(for: island, selected: isSelected),
                     delay: Double(index) * 0.06
                 )
@@ -252,9 +268,10 @@ struct HarborMapOverviewView: View {
     }
 
     private func nodeSize(for island: ProjectIsland, selected: Bool) -> CGSize {
-        if island.activeCount > 0 { return CGSize(width: 144, height: 88) }
-        if island.recentCount > 0 { return CGSize(width: 132, height: 80) }
-        return CGSize(width: 118, height: 70)
+        let scale: CGFloat = compact ? 0.55 : 1.0
+        if island.activeCount > 0 { return CGSize(width: 144 * scale, height: 88 * scale) }
+        if island.recentCount > 0 { return CGSize(width: 132 * scale, height: 80 * scale) }
+        return CGSize(width: 118 * scale, height: 70 * scale)
     }
 
     private var headerMascotState: PixelMascotState {
@@ -268,6 +285,7 @@ private struct StaggeredIslandNode: View {
     let island: ProjectIsland
     let isSelected: Bool
     let hasPendingPermission: Bool
+    var compact: Bool = false
     let onTap: () -> Void
     let size: CGSize
     let delay: Double
@@ -279,6 +297,7 @@ private struct StaggeredIslandNode: View {
             island: island,
             isSelected: isSelected,
             hasPendingPermission: hasPendingPermission,
+            compact: compact,
             onTap: onTap
         )
         .frame(width: size.width, height: size.height)

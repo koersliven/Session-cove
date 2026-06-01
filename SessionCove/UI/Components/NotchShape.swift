@@ -8,6 +8,14 @@ struct NotchShape: Shape {
     var topRadius: CGFloat
     var bottomRadius: CGFloat
 
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(topRadius, bottomRadius) }
+        set {
+            topRadius = newValue.first
+            bottomRadius = newValue.second
+        }
+    }
+
     func path(in rect: CGRect) -> Path {
         // Manually trace 4 arcs + 4 lines so top/bottom corner radii can differ.
         // UnevenRoundedRectangle (macOS 13+) would also work; manual path keeps a

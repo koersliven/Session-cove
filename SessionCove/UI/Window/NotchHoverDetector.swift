@@ -16,6 +16,15 @@ final class NotchHoverDetector {
     private var notchScreenRect: NSRect = .zero
     private var localMonitor: Any?
     private var globalMonitor: Any?
+    /// 10Hz cursor poll. mouseMoved alone misses two cases:
+    ///   (1) cursor parked motionless inside the hot zone — no event fires
+    ///   ever, so `insideZone` stays stale forever
+    ///   (2) high-speed sweeps where AppKit coalesces moves and the entry
+    ///   frame is dropped
+    /// The timer self-heals both within 100ms by re-running `handle` with
+    /// the current cursor position. Cost is negligible (one NSPoint compare
+    /// per tick).
+    private var pollTimer: Timer?
 
     /// Fires after the user has been continuously inside the hot zone for
     /// `enterDebounce` seconds.
@@ -33,8 +42,14 @@ final class NotchHoverDetector {
     private var pendingExitWork: DispatchWorkItem?
     private var insideZone: Bool = false
 
-    private static let enterDebounce: TimeInterval = 0.240
-    private static let exitDebounce: TimeInterval = 0.320
+    /// Hover debounce: enter requires 80ms of sustained presence (filters
+    /// "approach-and-back" gestures where the cursor grazes the hot zone and
+    /// pulls away), exit requires 250ms to cover the tail of the SwiftUI
+    /// spring animation (response 0.42 ≈ 600ms total). Without these, a
+    /// cursor that drifts out during the spring's flight phase fires exit
+    /// while the panel is still expanding — visually a "伸到一半又缩回" jitter.
+    private static let enterDebounce: TimeInterval = 0.080
+    private static let exitDebounce: TimeInterval = 0.250
 
     init() {
         // mouseMoved is delivered to .local for our own app, .global for events
@@ -53,6 +68,13 @@ final class NotchHoverDetector {
                 self?.handle(screenLocation: NSEvent.mouseLocation)
             }
         }
+
+        // Always-on 10Hz poll. See `pollTimer` doc-comment for why.
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.10, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handle(screenLocation: NSEvent.mouseLocation)
+            }
+        }
     }
 
     deinit {
@@ -61,6 +83,7 @@ final class NotchHoverDetector {
         MainActor.assumeIsolated {
             if let m = localMonitor { NSEvent.removeMonitor(m) }
             if let m = globalMonitor { NSEvent.removeMonitor(m) }
+            pollTimer?.invalidate()
             pendingEnterWork?.cancel()
             pendingExitWork?.cancel()
         }
@@ -78,6 +101,16 @@ final class NotchHoverDetector {
         pendingExitWork?.cancel()
         pendingEnterWork = nil
         pendingExitWork = nil
+    }
+
+    /// Clear the animation gate AND immediately re-evaluate against the
+    /// current cursor position. Without the re-eval, a cursor that was
+    /// parked inside the new hot zone during the gate window would never
+    /// trigger an enter — mouseMoved doesn't fire when the cursor is still,
+    /// and `insideZone` would stay at its pre-gate value forever.
+    func clearAnimatingAndReevaluate() {
+        isAnimating = false
+        handle(screenLocation: NSEvent.mouseLocation)
     }
 
     private func handle(screenLocation: NSPoint) {
