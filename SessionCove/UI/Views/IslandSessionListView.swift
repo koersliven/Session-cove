@@ -194,6 +194,13 @@ struct IslandSessionListView: View {
                 edge: isHovered ? PixelPalette.alert : PixelPalette.hudEdge.opacity(0.82)
             )
         }
+        .contextMenu {
+            Button(role: .destructive) {
+                viewModel.deleteSession(session)
+            } label: {
+                Label("Move to Trash", systemImage: "trash")
+            }
+        }
     }
 
     private func approvalFlag(_ request: HookPermissionRequest) -> some View {

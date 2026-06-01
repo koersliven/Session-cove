@@ -81,6 +81,7 @@ enum SessionParser {
             id: sessionId,
             projectDirEncoded: projectDirEncoded,
             projectPath: projectPath,
+            jsonlPath: filePath,
             firstUserMessage: firstMessage,
             aiTitle: aiTitle,
             timestamp: timestamp,

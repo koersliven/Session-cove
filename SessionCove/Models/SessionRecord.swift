@@ -4,6 +4,7 @@ struct SessionRecord: Identifiable, Hashable, Sendable {
     let id: String
     let projectDirEncoded: String
     let projectPath: String
+    let jsonlPath: String
     let firstUserMessage: String?
     let aiTitle: String?
     let timestamp: Date?

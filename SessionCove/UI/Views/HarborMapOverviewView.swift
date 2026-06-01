@@ -197,6 +197,7 @@ struct HarborMapOverviewView: View {
                 island: island,
                 onSessionTap: { viewModel.selectSession($0) },
                 onResume: { viewModel.resumeSession($0) },
+                onDelete: { viewModel.deleteSession($0) },
                 onNewSession: { viewModel.newSession(for: island) }
             )
             .frame(height: 126)

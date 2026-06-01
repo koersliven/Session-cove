@@ -4,6 +4,7 @@ struct HarborSessionDock: View {
     let island: ProjectIsland
     let onSessionTap: (SessionRecord) -> Void
     let onResume: (SessionRecord) -> Void
+    let onDelete: (SessionRecord) -> Void
     var onNewSession: (() -> Void)? = nil
 
     var body: some View {
@@ -61,7 +62,8 @@ struct HarborSessionDock: View {
                     HarborSessionDockCard(
                         session: session,
                         onTap: { onSessionTap(session) },
-                        onResume: { onResume(session) }
+                        onResume: { onResume(session) },
+                        onDelete: { onDelete(session) }
                     )
                 }
                 if island.totalCount > 8 {
@@ -107,6 +109,7 @@ struct HarborSessionDockCard: View {
     let session: SessionRecord
     let onTap: () -> Void
     let onResume: () -> Void
+    let onDelete: () -> Void
 
     @State private var isHovered = false
 
@@ -170,6 +173,11 @@ struct HarborSessionDockCard: View {
                 )
         )
         .onHover { isHovered = $0 }
+        .contextMenu {
+            Button(role: .destructive, action: onDelete) {
+                Label("Move to Trash", systemImage: "trash")
+            }
+        }
     }
 
     private var buttonLabel: String {

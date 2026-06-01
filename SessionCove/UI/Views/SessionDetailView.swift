@@ -182,7 +182,25 @@ struct SessionDetailView: View {
             ) {
                 viewModel.resumeSession(session)
             }
+            trashButton
         }
+    }
+
+    private var trashButton: some View {
+        Button {
+            viewModel.deleteSession(session)
+        } label: {
+            Image(systemName: "trash.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 36)
+                .padding(.vertical, 10)
+                .background {
+                    PixelBox(fill: PixelPalette.coral.opacity(0.84), edge: PixelPalette.coral)
+                }
+        }
+        .buttonStyle(.plain)
+        .help("Move session to Trash")
     }
 
     // MARK: - Helpers

@@ -231,6 +231,31 @@ final class CoveViewModel: @unchecked Sendable {
         SessionResumer.launchNew(projectPath: island.path)
     }
 
+    func deleteSession(_ session: SessionRecord) {
+        let url = URL(fileURLWithPath: session.jsonlPath)
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        } catch {
+            print("[CoveViewModel] deleteSession failed: \(error.localizedDescription)")
+            return
+        }
+        CoveSoundManager.shared.play(.bubblePop)
+
+        // Optimistic local removal so the UI updates immediately; FSEvents will
+        // fire a refresh shortly which is idempotent.
+        for index in islands.indices {
+            islands[index].sessions.removeAll { $0.id == session.id }
+        }
+        islands.removeAll { $0.sessions.isEmpty }
+
+        if selectedSession?.id == session.id {
+            selectedSession = nil
+            if uiMode == .sessionFocus {
+                uiMode = selectedIsland == nil ? .harborOverview : .projectIsland
+            }
+        }
+    }
+
     func showMockHookRequest() {
         updatePendingHookRequest(HookPermissionRequest.mock(for: selectedIsland ?? islands.first))
     }
