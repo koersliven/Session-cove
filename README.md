@@ -30,6 +30,12 @@
   <img src="docs/permission-ui.png" alt="Permission Approval UI" width="480">
 </p>
 
+<p align="center">
+  <img src="docs/question-ui.png" alt="Interactive Question Form" width="480">
+  <br>
+  <em>When Claude calls <code>AskUserQuestion</code>, Session Cove surfaces a pixel form so you can pick from options or type a free answer — without switching to the terminal.</em>
+</p>
+
 ---
 
 ## What is Session Cove?
@@ -46,6 +52,7 @@ When you use Claude Code across many projects, sessions scatter across directori
 - **Harbor map visualization** — Each project is a pixel island; active sessions glow with bubbles and seaweed animations, archived ones rest quietly.
 - **One-click resume** — Select any historical session and reopen it in your terminal with the correct working directory.
 - **Permission approval** — Intercept Claude Code's permission requests and approve/deny/always-allow from the menu bar — no terminal switching needed.
+- **Interactive question forms** — When Claude calls `AskUserQuestion` (single-choice / multi-choice / free text / secret token), Session Cove pops a pixel form right under the notch. Submit your answer and Claude continues — you never have to focus the terminal mid-thought.
 - **Always Allow rules** — One tap to permanently approve a tool type per project. The hook auto-responds on future requests silently.
 - **Real-time session detection** — Discovers new sessions and status changes via filesystem events. Active, recent, and archived states update live.
 - **Ocean sound effects** — Sonar pings for permission requests, bubble pops for actions, water splashes for transitions. 8-bit Dave the Diver vibes.
@@ -78,11 +85,17 @@ Session Cove reads session metadata from `~/.claude/projects/` (headers only —
 |-----------|--------|-------|
 | Claude Code | Supported | Full integration: sessions, permissions, resume |
 
-| Terminal | Status | Notes |
-|---------|--------|-------|
-| iTerm2 | Supported | Session resume via `claude --resume` |
-| Terminal.app | Planned | |
-| Ghostty | Planned | |
+| Terminal | Focus existing | Launch new | Notes |
+|---------|----------------|------------|-------|
+| iTerm2 | ✅ AppleScript `tty` match | ✅ `do script` | Golden path |
+| Terminal.app | ✅ AppleScript `tty` match | ✅ `do script` | Built-in fallback |
+| Ghostty | ❌ no scripting | ✅ `open -na --args` | Launch only |
+| kitty | ✅ `kitty @ ls / focus-window` | ✅ `kitty --directory` | Needs `allow_remote_control yes` |
+| WezTerm | ✅ `wezterm cli list / activate-pane` | ✅ `wezterm cli spawn` | Multiplexer auto-starts |
+| Alacritty | ❌ no scripting | ✅ `alacritty -e` | Launch only |
+| Warp | ❌ closed scripting | ⚠️ falls back to Terminal.app | URL scheme can't carry commands |
+
+The active terminal is auto-detected from the ancestor process of running `claude` instances; you can override it in **Settings → 通用 → 首选终端**.
 
 <a id="installation"></a>
 
