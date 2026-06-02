@@ -401,8 +401,12 @@ final class CoveViewModel: @unchecked Sendable {
                 // UI-injected mocks (Debug menu) are not on disk; the next poll
                 // would return nil and clobber them, causing the popping panel
                 // to vanish in ~500ms. Skip the overwrite when the current
-                // pending is a mock and disk has nothing.
-                let currentIsMock = self.pendingHookRequest?.id.hasPrefix("mock-") == true
+                // pending is a mock and disk has nothing. Approval/question
+                // mocks use the `mock-` id prefix; completion mocks use
+                // `stop-mock-` to mimic real Stop event ids — both must be
+                // protected.
+                let currentID = self.pendingHookRequest?.id ?? ""
+                let currentIsMock = currentID.hasPrefix("mock-") || currentID.hasPrefix("stop-mock-")
                 if real == nil && currentIsMock {
                     try? await Task.sleep(for: .milliseconds(500))
                     continue
