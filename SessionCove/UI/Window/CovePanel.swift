@@ -60,7 +60,16 @@ final class CovePanel: NSPanel {
                 cgEvent.post(tap: .cghidEventTap)
                 return
             }
-            makeKey()
+            // Deliberately NOT calling makeKey() here. With
+            // `nonactivatingPanel` + `isFloatingPanel`, AppKit still routes
+            // mouse-down/up to the hit-tested SwiftUI view (button taps
+            // work without key status). Forcing key status used to steal
+            // the user's keyboard focus from whatever app they were typing
+            // in — the visible symptom: an approval popup appears and the
+            // user "loses" their other app's text input until they decide.
+            // SwiftUI's SecureField / TextField will request key status
+            // themselves on focus, which is the only place we actually
+            // need it.
         }
         super.sendEvent(event)
     }

@@ -349,26 +349,39 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
     /// pending request alive in the viewModel; when the user returns, this
     /// observer re-fires and pops the panel back open.
     private func observePendingHookRequest() {
+        // Step 1 — synchronously reconcile against the *current* value.
+        // withObservationTracking only fires on subsequent changes, so a
+        // pending that was already set before this controller existed
+        // (e.g. hookPolling found one between WindowManager.setup() and
+        // installController()) would never trigger popping. The visible
+        // bug: notch status dot lit yellow but the popping panel never
+        // appeared. Reconcile-then-track closes that race.
+        reconcilePoppingForPendingHookRequest()
+
         withObservationTracking {
             _ = viewModel.pendingHookRequest
         } onChange: {
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                let pending = self.viewModel.pendingHookRequest
-                let status = self.viewModel.notchStatus
-                print("[NotchPopping] observePendingHookRequest fired — pending=\(pending?.id ?? "nil") status=\(status) modeBefore=\(String(describing: self.modeBeforePopping))")
-                if pending != nil, status != .popping {
-                    self.modeBeforePopping = status
-                    self.viewModel.notchStatus = .popping
-                    print("[NotchPopping] → popping (saved modeBeforePopping=\(status))")
-                } else if pending == nil, status == .popping {
-                    let target = self.modeBeforePopping ?? .closed
-                    self.viewModel.notchStatus = target
-                    self.modeBeforePopping = nil
-                    print("[NotchPopping] ← restored from popping → \(target)")
-                }
+                self.reconcilePoppingForPendingHookRequest()
                 self.observePendingHookRequest()
             }
+        }
+    }
+
+    private func reconcilePoppingForPendingHookRequest() {
+        let pending = viewModel.pendingHookRequest
+        let status = viewModel.notchStatus
+        print("[NotchPopping] reconcile — pending=\(pending?.id ?? "nil") status=\(status) modeBefore=\(String(describing: modeBeforePopping))")
+        if pending != nil, status != .popping {
+            modeBeforePopping = status
+            viewModel.notchStatus = .popping
+            print("[NotchPopping] → popping (saved modeBeforePopping=\(status))")
+        } else if pending == nil, status == .popping {
+            let target = modeBeforePopping ?? .closed
+            viewModel.notchStatus = target
+            modeBeforePopping = nil
+            print("[NotchPopping] ← restored from popping → \(target)")
         }
     }
 

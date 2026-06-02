@@ -390,17 +390,31 @@ final class CoveViewModel: @unchecked Sendable {
         }
 
         if previousID != request.id || uiMode == .compact {
-            if uiMode == .pet {
-                CoveSoundManager.shared.play(.sonarPing)
-                return
+            // Suppress auto-presentation while the user is in a fullscreen
+            // app — the yellow status dot still alerts them; they can hand-
+            // toggle the pet to act when ready. Mirrors ping-island's
+            // `shouldSuppressAutomaticPresentation`. FullscreenAppDetector
+            // is @MainActor-isolated; all callers of this method run on
+            // main (hookPolling Task @MainActor + SwiftUI button actions),
+            // so assumeIsolated is safe.
+            let suppressAutoPresent = MainActor.assumeIsolated {
+                FullscreenAppDetector.shared.isFullscreen
             }
+
             if uiMode != .permissionInterruption {
                 modeBeforeInterruption = uiMode
             }
             selectedIsland = islands.first { $0.path == request.projectPath } ?? selectedIsland
             selectedSession = selectedIsland?.sessions.sorted { $0.lastModified > $1.lastModified }.first ?? selectedSession
-            uiMode = .permissionInterruption
-            openReason = .notification
+
+            // Pet mode used to early-return here (sonarPing only, no UI),
+            // forcing users to hunt down a tiny yellow dot and click. Now
+            // pet routes through the same .permissionInterruption path as
+            // every other mode — ping frame slides out automatically.
+            if !suppressAutoPresent {
+                uiMode = .permissionInterruption
+                openReason = .notification
+            }
             CoveSoundManager.shared.play(.sonarPing)
         }
     }

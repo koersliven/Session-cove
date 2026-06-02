@@ -43,7 +43,15 @@ enum ClaudePermissionHook {
                   let modified = attrs[.modificationDate] as? Date else {
                 continue
             }
-            if Date().timeIntervalSince(modified) > 60 {
+            // Match the python hook's TIMEOUT_SECONDS (24 h). Earlier this
+            // was 60s, which silently deleted real pending requests once
+            // the user spent more than a minute reading session context
+            // before deciding — popup vanished, hook was still alive
+            // upstream, claude code waited forever. The python side
+            // touches the file every poll tick to refresh mtime, so
+            // legitimately stale files (orphaned because the python
+            // process was killed) still get cleaned up after 24 h.
+            if Date().timeIntervalSince(modified) > 24 * 60 * 60 {
                 try? FileManager.default.removeItem(at: url)
                 continue
             }
@@ -404,20 +412,25 @@ enum ClaudePermissionHook {
                 return
             print_allow()
 
-        def output_decision(decision, is_question_event=False):
+        def output_decision(decision, is_question_event=False, tool_input=None):
             value = decision.get("decision")
             if value == "answer":
-                # AskUserQuestion / AskFollowupQuestion completion: emit the
-                # PreToolUse hookSpecificOutput shape with permissionDecision
-                # = allow + updatedInput carrying the answers map (questionId
-                # -> user-supplied text). Claude merges updatedInput into the
-                # tool_input before dispatching the actual tool call.
+                # AskUserQuestion / AskFollowupQuestion completion. Claude's
+                # PreToolUse hookSpecificOutput.updatedInput **replaces the
+                # entire tool_input** before dispatch — earlier we wrote just
+                # `{"answers": {...}}` and Claude rejected the call with
+                # "required parameter `questions` is missing" because we'd
+                # wiped the original schema. Echo the original tool_input
+                # back and append `answers` alongside, so all required
+                # fields (questions, etc.) survive.
                 answers = decision.get("answers") or {}
+                merged = dict(tool_input) if isinstance(tool_input, dict) else {}
+                merged["answers"] = answers
                 print(json.dumps({
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "permissionDecision": "allow",
-                        "updatedInput": answers,
+                        "updatedInput": merged,
                     }
                 }, ensure_ascii=False), flush=True)
                 return
@@ -620,6 +633,13 @@ enum ClaudePermissionHook {
             if event_name != "PermissionRequest" and not is_question_event:
                 return 0
 
+            # Snapshot the original tool_input so output_decision can echo
+            # it back via updatedInput on the answer path. Helper functions
+            # (match_allowlist / stable_summary / build_questions) each take
+            # their own local copy from payload, so we keep this top-level
+            # binding minimal and only used here.
+            tool_input = payload.get("tool_input") or {}
+
             session_id = str(payload.get("session_id") or "")
 
             # Allowlist + trusted-session shortcuts only apply to the legacy
@@ -665,11 +685,12 @@ enum ClaudePermissionHook {
             os.replace(tmp, request_path)
 
             deadline = time.time() + TIMEOUT_SECONDS
+            last_touch = time.time()
             while time.time() < deadline:
                 if os.path.exists(response_path):
                     with open(response_path, "r", encoding="utf-8") as f:
                         decision = json.load(f)
-                    output_decision(decision, is_question_event=is_question_event)
+                    output_decision(decision, is_question_event=is_question_event, tool_input=tool_input)
                     try:
                         os.remove(request_path)
                     except OSError:
@@ -680,8 +701,36 @@ enum ClaudePermissionHook {
                         pass
                     return 0
                 if not os.path.exists(request_path):
+                    # Race: Swift writes response first, then removes pending.
+                    # If we observed `response_path` missing on this loop's
+                    # first check, then Swift completed both writes before our
+                    # second check, we'd miss the answer entirely and emit
+                    # `default_pass_through` (silent). Re-read response one
+                    # more time before giving up. This is the difference
+                    # between "user submitted but Claude saw no answer" and
+                    # the real timeout case.
+                    if os.path.exists(response_path):
+                        with open(response_path, "r", encoding="utf-8") as f:
+                            decision = json.load(f)
+                        output_decision(decision, is_question_event=is_question_event, tool_input=tool_input)
+                        try:
+                            os.remove(response_path)
+                        except OSError:
+                            pass
+                        return 0
                     default_pass_through(is_question_event)
                     return 0
+                # Refresh mtime every 30s so the Swift-side stale-file
+                # sweeper (24 h cutoff) doesn't reclaim a real pending
+                # while the user is still reading session context. Cheap
+                # syscall; only happens while we're polling.
+                now = time.time()
+                if now - last_touch > 30:
+                    try:
+                        os.utime(request_path, None)
+                    except OSError:
+                        pass
+                    last_touch = now
                 time.sleep(0.2)
             default_pass_through(is_question_event)
             return 0
