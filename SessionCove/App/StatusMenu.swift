@@ -53,6 +53,14 @@ enum StatusMenu {
             mockApproval.target = MenuActionTarget.shared
             menu.addItem(mockApproval)
 
+            let mockApprovalDetail = NSMenuItem(
+                title: "Debug: Mock Approval (with detail)",
+                action: #selector(MenuActionTarget.mockApprovalDetail(_:)),
+                keyEquivalent: ""
+            )
+            mockApprovalDetail.target = MenuActionTarget.shared
+            menu.addItem(mockApprovalDetail)
+
             let mockQuestion = NSMenuItem(
                 title: "Debug: Mock Question Request",
                 action: #selector(MenuActionTarget.mockQuestion(_:)),
@@ -60,6 +68,14 @@ enum StatusMenu {
             )
             mockQuestion.target = MenuActionTarget.shared
             menu.addItem(mockQuestion)
+
+            let mockCompletion = NSMenuItem(
+                title: "Debug: Mock Completion Toast",
+                action: #selector(MenuActionTarget.mockCompletion(_:)),
+                keyEquivalent: ""
+            )
+            mockCompletion.target = MenuActionTarget.shared
+            menu.addItem(mockCompletion)
 
             menu.addItem(.separator())
         }
@@ -106,8 +122,16 @@ final class MenuActionTarget: NSObject {
         viewModel?.showMockHookRequest()
     }
 
+    @objc func mockApprovalDetail(_ sender: Any?) {
+        viewModel?.showMockApprovalWithDetail()
+    }
+
     @objc func mockQuestion(_ sender: Any?) {
         viewModel?.showMockQuestionRequest()
+    }
+
+    @objc func mockCompletion(_ sender: Any?) {
+        viewModel?.showMockCompletionRequest()
     }
 
     @objc func quit(_ sender: Any?) {

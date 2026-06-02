@@ -6,9 +6,12 @@ import Foundation
 /// PermissionRequest hook. `.question` covers AskUserQuestion /
 /// AskFollowupQuestion events where Claude wants a typed answer instead of
 /// a permission verdict — see `HookInterventionQuestion`.
+/// `.completion` is fired by the Claude Code Stop hook when a session
+/// finishes a turn — fire-and-forget toast (no response file written).
 enum HookRequestKind: String, Codable, Sendable {
     case approval
     case question
+    case completion
 }
 
 /// User decision on a hook request. Was a `String`-backed enum until we needed
@@ -24,6 +27,12 @@ enum HookApprovalDecision: Equatable, Identifiable, Sendable {
     case allowSession
     case alwaysAllow
     case answer(answers: [String: String])
+    /// Completion-toast: user clicked 知道了. Pending file is removed; no
+    /// response is written (the Stop hook is fire-and-forget Python-side).
+    case acknowledge
+    /// Completion-toast: user clicked 打开 session. Same disk semantics as
+    /// `.acknowledge` but the view model also resumes the related session.
+    case openSession
 
     /// Stable identifier written to disk and used for `Identifiable`.
     var serializedKey: String {
@@ -33,6 +42,8 @@ enum HookApprovalDecision: Equatable, Identifiable, Sendable {
         case .allowSession: return "allowSession"
         case .alwaysAllow: return "alwaysAllow"
         case .answer: return "answer"
+        case .acknowledge: return "acknowledge"
+        case .openSession: return "openSession"
         }
     }
 
@@ -45,6 +56,8 @@ enum HookApprovalDecision: Equatable, Identifiable, Sendable {
         case .allowSession: return "Session"
         case .alwaysAllow: return "Always"
         case .answer: return "Submit"
+        case .acknowledge: return "知道了"
+        case .openSession: return "打开 session"
         }
     }
 
@@ -55,11 +68,14 @@ enum HookApprovalDecision: Equatable, Identifiable, Sendable {
         case .allowSession: return "Allow similar requests for this session."
         case .alwaysAllow: return "Always allow matching requests."
         case .answer: return "Submit answers back to Claude."
+        case .acknowledge: return "Dismiss completion toast."
+        case .openSession: return "Resume the just-finished session."
         }
     }
 
-    /// Buttons shown in approval UIs. `.answer` is intentionally excluded —
-    /// it's emitted only from `HookQuestionView` (stage 6).
+    /// Buttons shown in approval UIs. `.answer`/`.acknowledge`/`.openSession`
+    /// are excluded — they're emitted only from their dedicated views
+    /// (HookQuestionView, CompletionPingCard).
     static let staticDecisions: [HookApprovalDecision] = [.deny, .allow, .allowSession, .alwaysAllow]
 }
 
@@ -72,11 +88,25 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
     let matchValue: String
     let receivedAt: Date
     /// `.approval` for legacy yes/deny payloads, `.question` for AskUserQuestion-style
-    /// requests. Defaults to `.approval` so JSON written by older python hooks
-    /// (no `kind` field) still decodes.
+    /// requests, `.completion` for Stop-hook task-done toasts. Defaults to
+    /// `.approval` so JSON written by older python hooks (no `kind` field)
+    /// still decodes.
     var kind: HookRequestKind
-    /// Empty for `.approval` requests. Populated only when `kind == .question`.
+    /// Empty for `.approval`/`.completion` requests. Populated only when `kind == .question`.
     var questions: [HookInterventionQuestion]
+    /// Pretty-printed JSON of the original `tool_input`, populated only for
+    /// `.approval` requests (and only by python hook v3+). Powers the
+    /// approval-card chevron/expanded panel. `nil` for legacy v2 payloads.
+    var toolInputJSON: String?
+    /// True if `toolInputJSON` was clipped at the python serialization cap (8 KB).
+    var toolInputTruncated: Bool
+    /// Stop-hook only: path to the Claude transcript JSONL of the finished turn.
+    var transcriptPath: String?
+    /// When the Stop event fired (separate from `receivedAt` which is set on file write).
+    var completedAt: Date?
+    /// Reserved for v2 — last assistant message preview for the completion toast.
+    /// Python writes `null` today; populating it requires transcript tail parsing.
+    var lastMessagePreview: String?
 
     init(
         id: String,
@@ -87,7 +117,12 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
         matchValue: String,
         receivedAt: Date,
         kind: HookRequestKind = .approval,
-        questions: [HookInterventionQuestion] = []
+        questions: [HookInterventionQuestion] = [],
+        toolInputJSON: String? = nil,
+        toolInputTruncated: Bool = false,
+        transcriptPath: String? = nil,
+        completedAt: Date? = nil,
+        lastMessagePreview: String? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -98,14 +133,23 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
         self.receivedAt = receivedAt
         self.kind = kind
         self.questions = questions
+        self.toolInputJSON = toolInputJSON
+        self.toolInputTruncated = toolInputTruncated
+        self.transcriptPath = transcriptPath
+        self.completedAt = completedAt
+        self.lastMessagePreview = lastMessagePreview
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, sessionId, toolName, projectPath, summary, matchValue, receivedAt, kind, questions
+        case id, sessionId, toolName, projectPath, summary, matchValue, receivedAt
+        case kind, questions
+        case toolInputJSON, toolInputTruncated
+        case transcriptPath, completedAt, lastMessagePreview
     }
 
-    /// Custom decoder so missing `kind` / `questions` keys (legacy schema v1)
-    /// fall back to `.approval` / `[]` instead of throwing.
+    /// Custom decoder so missing keys (legacy schema v1/v2 payloads, or
+    /// kind-specific fields that don't apply) fall back to safe defaults
+    /// instead of throwing.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(String.self, forKey: .id)
@@ -117,6 +161,11 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
         self.receivedAt = try container.decode(Date.self, forKey: .receivedAt)
         self.kind = try container.decodeIfPresent(HookRequestKind.self, forKey: .kind) ?? .approval
         self.questions = try container.decodeIfPresent([HookInterventionQuestion].self, forKey: .questions) ?? []
+        self.toolInputJSON = try container.decodeIfPresent(String.self, forKey: .toolInputJSON)
+        self.toolInputTruncated = try container.decodeIfPresent(Bool.self, forKey: .toolInputTruncated) ?? false
+        self.transcriptPath = try container.decodeIfPresent(String.self, forKey: .transcriptPath)
+        self.completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
+        self.lastMessagePreview = try container.decodeIfPresent(String.self, forKey: .lastMessagePreview)
     }
 
     static func mock(for island: ProjectIsland?) -> HookPermissionRequest {
@@ -130,6 +179,43 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
             summary: "claude wants to run a model/tool request in this project island.",
             matchValue: "git status",
             receivedAt: Date()
+        )
+    }
+
+    /// Mock with non-nil `toolInputJSON` so the chevron + expanded detail
+    /// panel can be exercised via Debug menu without a real Claude payload.
+    static func mockWithDetail(for island: ProjectIsland?) -> HookPermissionRequest {
+        HookPermissionRequest(
+            id: "mock-" + UUID().uuidString,
+            sessionId: nil,
+            toolName: "Bash",
+            projectPath: island?.path ?? "~/Work/session-cove",
+            summary: "Bash: git status --porcelain | head -50",
+            matchValue: "git status --porcelain | head -50",
+            receivedAt: Date(),
+            toolInputJSON: """
+            {
+              "command": "git status --porcelain | head -50",
+              "description": "Check repo dirty state, capped at 50 lines"
+            }
+            """,
+            toolInputTruncated: false
+        )
+    }
+
+    /// Stop-hook completion mock for the Debug menu.
+    static func mockCompletion(for island: ProjectIsland?) -> HookPermissionRequest {
+        HookPermissionRequest(
+            id: "stop-mock-" + UUID().uuidString,
+            sessionId: "mock-session-id-12345678",
+            toolName: "Stop",
+            projectPath: island?.path ?? "~/Work/session-cove",
+            summary: "Session 完成了一回合任务",
+            matchValue: "",
+            receivedAt: Date(),
+            kind: .completion,
+            transcriptPath: nil,
+            completedAt: Date()
         )
     }
 }

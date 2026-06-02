@@ -21,7 +21,7 @@ struct SessionResumer {
         // the "spinner forever" hang: ~50 ps invocations + an osascript that
         // can block on a hidden TCC dialog never let the RunLoop spin.
         DispatchQueue.global(qos: .userInitiated).async {
-            let lookup = findSessionTTY(session: session)
+            let lookup = findSessionTTY(sessionId: session.id, projectPath: session.projectPath)
             if let lookup {
                 print("[SessionResumer] TTY lookup result: tty=\(lookup.tty) pid=\(lookup.pid)")
             } else {
@@ -34,7 +34,25 @@ struct SessionResumer {
             // No TTY found, or TTY not present in any known terminal —
             // open a fresh window with `claude --resume <id>` instead of
             // leaving the user staring at an unrelated front-most app.
-            launchNewSession(session: session)
+            launchNewSession(sessionId: session.id, projectPath: session.projectPath)
+        }
+    }
+
+    /// Used by the completion-toast "打开 session" button when the
+    /// SessionScanner hasn't yet ingested the just-finished JSONL — we don't
+    /// have a `SessionRecord` to pass into `resume(session:)`, but we do
+    /// have the session id (from the Stop payload) and the project cwd.
+    /// Same focus → launch fallback chain as `resume`, just without
+    /// requiring a fully-built SessionRecord.
+    static func focusOrLaunch(sessionId: String, projectPath: String) {
+        print("[SessionResumer] focusOrLaunch sessionId=\(sessionId.prefix(12)) project=\(projectPath)")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let lookup = findSessionTTY(sessionId: sessionId, projectPath: projectPath)
+            if let lookup, focusExistingSession(tty: lookup.tty, pid: lookup.pid) {
+                print("[SessionResumer] focusOrLaunch focused tty=\(lookup.tty)")
+                return
+            }
+            launchNewSession(sessionId: sessionId, projectPath: projectPath)
         }
     }
 
@@ -56,7 +74,7 @@ struct SessionResumer {
 
     // MARK: - TTY lookup
 
-    private static func findSessionTTY(session: SessionRecord) -> (tty: String, pid: Int32)? {
+    private static func findSessionTTY(sessionId: String, projectPath: String) -> (tty: String, pid: Int32)? {
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -80,7 +98,7 @@ struct SessionResumer {
               let output = String(data: data, encoding: .utf8) else { return nil }
 
         // Phase 2 candidates: bare `claude` processes (no sessionId in args).
-        // Resolve them by cwd against session.projectPath.
+        // Resolve them by cwd against projectPath.
         var claudePidTty: [(pid: Int32, tty: String)] = []
 
         for line in output.components(separatedBy: "\n") {
@@ -96,7 +114,7 @@ struct SessionResumer {
             let argsJoined = parts[3..<parts.count].joined(separator: " ")
 
             // Phase 1: args literally contain the session id (covers `claude --resume <id>`).
-            if argsJoined.contains(session.id) {
+            if !sessionId.isEmpty, argsJoined.contains(sessionId) {
                 return (tty, pid)
             }
 
@@ -105,13 +123,21 @@ struct SessionResumer {
             }
         }
 
-        // Phase 2: bare claude process whose cwd matches session.projectPath.
-        let targetCwd = normalizePath(session.projectPath)
-        for (pid, tty) in claudePidTty {
-            if let cwd = lsofCwd(pid: pid), normalizePath(cwd) == targetCwd {
-                print("[SessionResumer] Matched bare claude pid=\(pid) tty=\(tty) by cwd=\(cwd)")
-                return (tty, pid)
+        // Phase 2: bare claude process whose cwd matches projectPath.
+        let targetCwd = normalizePath(projectPath)
+        var matches: [(pid: Int32, tty: String)] = []
+        for entry in claudePidTty {
+            if let cwd = lsofCwd(pid: entry.pid), normalizePath(cwd) == targetCwd {
+                matches.append((pid: entry.pid, tty: entry.tty))
             }
+        }
+        // Prefer the lowest-pid match (oldest claude process) when multiple
+        // sessions share the same cwd — the just-finished one is whichever
+        // claude is alive in that project; if more than one, ancestor-walk
+        // in focusExistingSession will pick the right terminal.
+        if let first = matches.min(by: { $0.pid < $1.pid }) {
+            print("[SessionResumer] Matched bare claude pid=\(first.pid) tty=\(first.tty) by cwd=\(targetCwd)")
+            return (tty: first.tty, pid: first.pid)
         }
         return nil
     }
@@ -184,15 +210,15 @@ struct SessionResumer {
 
     // MARK: - Launch
 
-    private static func launchNewSession(session: SessionRecord) {
+    private static func launchNewSession(sessionId: String, projectPath: String) {
         let adapter = TerminalDetector.resolvedTerminal()
-        let command = "claude --resume \(session.id)"
-        print("[SessionResumer] Launching new session for \(session.id) via \(adapter.kind.displayName)")
+        let command = sessionId.isEmpty ? "claude" : "claude --resume \(sessionId)"
+        print("[SessionResumer] Launching new session for \(sessionId.prefix(12)) via \(adapter.kind.displayName)")
         do {
-            try adapter.launch(command: command, cwd: session.projectPath)
+            try adapter.launch(command: command, cwd: projectPath)
         } catch {
             print("[SessionResumer] launch via \(adapter.kind.displayName) failed: \(error)")
-            fallbackTerminalApp(command: command, cwd: session.projectPath)
+            fallbackTerminalApp(command: command, cwd: projectPath)
         }
     }
 

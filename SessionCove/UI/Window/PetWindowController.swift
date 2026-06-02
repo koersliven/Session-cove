@@ -109,7 +109,8 @@ final class PetWindowController: NSWindowController, NSWindowDelegate, CoveModeW
         let result = strategy.nextFrame(
             for: frameSize,
             currentPanelOrigin: panel.frame.origin,
-            screenFrame: screenFrame
+            screenFrame: screenFrame,
+            pingHeightOverride: viewModel.pingHeight
         )
 
         if let direction = result.pingDirection {

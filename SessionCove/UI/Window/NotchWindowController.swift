@@ -467,7 +467,19 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         case .peeking: return CGSize(width: 480, height: 220)
         case .opened: return CGSize(width: 600, height: 480)
         case .popping:
-            let height: CGFloat = (kind == .question) ? 360 : 120
+            // Mirror CoveNotchView.notchHeight: question 360 / completion 120 /
+            // approval 120 collapsed or 240 expanded. approvalExpanded read
+            // lazily via the closure caller (visibleNotchScreenRect / hit test
+            // closure) so a chevron toggle without notchStatus change still
+            // updates the hit-test rect.
+            let height: CGFloat = {
+                switch kind {
+                case .question: return 360
+                case .completion: return 120
+                case .approval, .none:
+                    return viewModel.approvalExpanded ? 240 : 120
+                }
+            }()
             return CGSize(width: 480, height: height)
         }
     }

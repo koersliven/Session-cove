@@ -9,6 +9,16 @@ struct CoveRootView: View {
             .onChange(of: viewModel.frameSize) { _, newSize in
                 onFrameSizeChange?(newSize)
             }
+            // pingHeight depends on pendingHookRequest?.kind + approvalExpanded.
+            // frameSize stays `.ping` across kind transitions and chevron toggles,
+            // so onChange(of: frameSize) wouldn't fire — re-emit the callback
+            // here so PetWindowController.updatePanelFrame re-computes the
+            // NSPanel size with the new pingHeightOverride.
+            .onChange(of: viewModel.pingHeight) { _, _ in
+                if viewModel.frameSize == .ping {
+                    onFrameSizeChange?(.ping)
+                }
+            }
     }
 
     @ViewBuilder
@@ -23,16 +33,13 @@ struct CoveRootView: View {
                 .frame(width: 300, height: 50)
 
         case .ping:
-            // Question-kind requests need a tall ping frame (≥360pt) so the
-            // HookQuestionView's options + free-text fields aren't clipped.
-            // Approval-kind keeps the existing 72pt strip.
-            if viewModel.pendingHookRequest?.kind == .question {
-                pingView
-                    .frame(width: 388, height: 360)
-            } else {
-                pingView
-                    .frame(width: 388, height: 72)
-            }
+            // Height comes from viewModel.pingHeight — kind-aware
+            // (approval=72/240, question=360, completion=120) so the same
+            // ping frame hosts every hook flavor without new CoveFrameSize
+            // cases. The .onChange listener at the top of body re-emits
+            // onFrameSizeChange whenever pingHeight shifts.
+            pingView
+                .frame(width: 388, height: viewModel.pingHeight)
 
         case .expanded:
             expandedView
@@ -68,7 +75,13 @@ struct CoveRootView: View {
         if let request = viewModel.pendingHookRequest {
             switch request.kind {
             case .approval:
-                PermissionPingCard(request: request) { decision in
+                PermissionPingCard(
+                    request: request,
+                    isExpanded: Binding(
+                        get: { viewModel.approvalExpanded },
+                        set: { viewModel.approvalExpanded = $0 }
+                    )
+                ) { decision in
                     viewModel.decideHookRequest(decision)
                 }
                 .padding(.horizontal, 8)
@@ -83,6 +96,15 @@ struct CoveRootView: View {
                         viewModel.decideHookRequest(.deny)
                     }
                 )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            case .completion:
+                CompletionPingCard(
+                    request: request,
+                    resolvedSession: viewModel.findSession(byId: request.sessionId ?? "")
+                ) { decision in
+                    viewModel.decideHookRequest(decision)
+                }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
             }

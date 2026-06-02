@@ -43,18 +43,6 @@ enum ClaudePermissionHook {
                   let modified = attrs[.modificationDate] as? Date else {
                 continue
             }
-            // Match the python hook's TIMEOUT_SECONDS (24 h). Earlier this
-            // was 60s, which silently deleted real pending requests once
-            // the user spent more than a minute reading session context
-            // before deciding — popup vanished, hook was still alive
-            // upstream, claude code waited forever. The python side
-            // touches the file every poll tick to refresh mtime, so
-            // legitimately stale files (orphaned because the python
-            // process was killed) still get cleaned up after 24 h.
-            if Date().timeIntervalSince(modified) > 24 * 60 * 60 {
-                try? FileManager.default.removeItem(at: url)
-                continue
-            }
 
             guard let data = try? Data(contentsOf: url),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -75,12 +63,28 @@ enum ClaudePermissionHook {
             // also falls back to .approval rather than crashing.
             let kind: HookRequestKind = (object["kind"] as? String)
                 .flatMap(HookRequestKind.init(rawValue:)) ?? .approval
+
+            // Per-kind staleness: approval/question polls every 30s and the
+            // python script touches mtime to keep the file alive — 24h is
+            // safe. Completion is fire-and-forget; nothing refreshes mtime,
+            // so a 1h cap keeps abandoned toasts from accumulating.
+            let ttl: TimeInterval = (kind == .completion) ? (60 * 60) : (24 * 60 * 60)
+            if Date().timeIntervalSince(modified) > ttl {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
             let questions: [HookInterventionQuestion]
             if let rawQuestions = object["questions"] as? [[String: Any]] {
                 questions = rawQuestions.compactMap(decodeQuestion(from:))
             } else {
                 questions = []
             }
+
+            let toolInputJSON = object["toolInputJSON"] as? String
+            let toolInputTruncated = (object["toolInputTruncated"] as? Bool) ?? false
+            let transcriptPath = object["transcriptPath"] as? String
+            let completedAt = (object["completedAt"] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
+            let lastMessagePreview = object["lastMessagePreview"] as? String
 
             let request = HookPermissionRequest(
                 id: id,
@@ -91,21 +95,54 @@ enum ClaudePermissionHook {
                 matchValue: matchValue,
                 receivedAt: receivedAt,
                 kind: kind,
-                questions: questions
+                questions: questions,
+                toolInputJSON: toolInputJSON,
+                toolInputTruncated: toolInputTruncated,
+                transcriptPath: transcriptPath,
+                completedAt: completedAt,
+                lastMessagePreview: lastMessagePreview
             )
 
             // UI-side allowlist guard: even if the python hook missed the match
             // (stale pending file from old script, race, etc.) — silently auto-allow
             // matching requests so the UI never shows a popup the user already pre-approved.
-            if matchesAllowlist(request: request) {
-                autoResolveAllowed(request: request)
-                continue
+            // Skip this branch for completion — Stop events are not allowlist-eligible.
+            if kind != .completion {
+                if matchesAllowlist(request: request) {
+                    autoResolveAllowed(request: request)
+                    continue
+                }
+                // Trusted-session guard. Without this, concurrent
+                // PermissionRequests from the same Claude turn race each
+                // other: Python A and Python B both check trusted before
+                // either has been added; user clicks Always on A, Swift
+                // adds the sessionId to trusted_sessions, but B's pending
+                // file is already on disk waiting for a response that the
+                // trusted-session shortcut would otherwise handle. Each
+                // poll re-reads the file, so once Always is pressed, every
+                // subsequent unresolved pending for the same session
+                // collapses silently here.
+                if let sessionId = request.sessionId,
+                   !sessionId.isEmpty,
+                   isSessionTrusted(sessionId) {
+                    autoResolveAllowed(request: request)
+                    continue
+                }
             }
 
             visible.append(request)
         }
 
-        return visible.sorted { $0.receivedAt < $1.receivedAt }
+        // Sort approval/question before completion so a pending approval
+        // always wins the .first slot — completion toasts wait until the
+        // user resolves the blocker. Within each group, oldest first.
+        return visible.sorted { lhs, rhs in
+            if lhs.kind != rhs.kind {
+                if lhs.kind == .completion { return false }
+                if rhs.kind == .completion { return true }
+            }
+            return lhs.receivedAt < rhs.receivedAt
+        }
     }
 
     /// Decode one element of the `questions` JSON array written by the python
@@ -198,6 +235,18 @@ enum ClaudePermissionHook {
     }
 
     static func resolve(request: HookPermissionRequest, decision: HookApprovalDecision) throws {
+        // Completion-toast (Stop hook) is fire-and-forget — the Python script
+        // exits immediately after writing the pending file. Nothing on the
+        // other end is waiting to read a response, so just remove the
+        // pending file. Mock requests with id prefix `stop-mock-` go through
+        // the same path; FileManager silently ignores missing files.
+        if request.kind == .completion {
+            try? FileManager.default.removeItem(
+                at: pendingDirectory.appendingPathComponent("\(request.id).json")
+            )
+            return
+        }
+
         try FileManager.default.createDirectory(at: responseDirectory, withIntermediateDirectories: true)
         var response: [String: Any] = [
             "id": request.id,
@@ -261,6 +310,20 @@ enum ClaudePermissionHook {
     }
 
     private static let trustedSessionsURL = hookDirectory.appendingPathComponent("trusted_sessions.json")
+
+    /// Re-reads `trusted_sessions.json` on every call so a Just-pressed
+    /// "Always" instantly affects pending files on the next poll tick.
+    /// Cheap (the file is small and the directory is local). Returns
+    /// false on any read/parse error — the popup still surfaces in that
+    /// case, which is the safe default.
+    static func isSessionTrusted(_ sessionId: String) -> Bool {
+        guard let data = try? Data(contentsOf: trustedSessionsURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sessions = json["sessions"] as? [String] else {
+            return false
+        }
+        return sessions.contains(sessionId)
+    }
 
     private static func addTrustedSession(_ sessionId: String) {
         var sessions: [String] = []
@@ -329,6 +392,27 @@ enum ClaudePermissionHook {
         ]
         hooks["PreToolUse"] = preservedPreToolUse + [preToolUseEntry]
 
+        // Stop hook: same script, fire-and-forget. The bridgeScript writes a
+        // .completion request and exits 0 immediately — no response file, no
+        // poll loop. timeout is short (5s) since the work is just a file
+        // write. We strip ping-island's Stop entry too — the user opted for
+        // Session Cove to take over completion notifications (matches the
+        // PermissionRequest/PreToolUse policy).
+        let existingStop = hooks["Stop"] as? [[String: Any]] ?? []
+        let preservedStop = existingStop.filter { entry in
+            !containsSessionCoveCommand(entry) && !containsPingIslandCommand(entry)
+        }
+        let stopEntry: [String: Any] = [
+            "hooks": [
+                [
+                    "type": "command",
+                    "command": scriptCommand,
+                    "timeout": 5
+                ]
+            ]
+        ]
+        hooks["Stop"] = preservedStop + [stopEntry]
+
         root["hooks"] = hooks
 
         if let existingData, !containsSessionCoveCommandInData(existingData) {
@@ -392,6 +476,18 @@ enum ClaudePermissionHook {
         ALLOWLIST_PATH = os.path.join(ROOT, "allowlist.json")
         SESSION_TRUST_PATH = os.path.join(ROOT, "trusted_sessions.json")
         TIMEOUT_SECONDS = 24 * 60 * 60
+
+        # Schema v3 (2026-06-02): adds toolInputJSON + Stop completion events.
+        # Older v2 payloads still decode on the Swift side via decodeIfPresent.
+        SCHEMA_VERSION = 3
+        # tool_input serialization cap. 8 KB is generous for shell commands +
+        # most Edit diffs, and small enough that SwiftUI Text + ScrollView
+        # render without slowdown. MCP payloads larger than this get truncated.
+        TOOL_INPUT_SIZE_CAP = 8192
+        # Redact dict values whose keys hint at credentials. Heuristic, not
+        # exhaustive — covers obvious cases like Authorization headers and
+        # API token kwargs. Documented in the Plan's risks.
+        SECRET_KEY_PATTERNS = ("token", "password", "secret", "auth", "api_key", "authorization", "bearer")
 
         def ensure_dirs():
             os.makedirs(PENDING, exist_ok=True)
@@ -607,6 +703,70 @@ enum ClaudePermissionHook {
             seed = json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str)
             return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
+        def redact_tool_input(value):
+            # Walk the structure replacing values under known-secret keys
+            # with "<redacted>". Lists/scalars pass through as-is. The
+            # check is case-insensitive substring against SECRET_KEY_PATTERNS.
+            if isinstance(value, dict):
+                out = {}
+                for k, v in value.items():
+                    lk = str(k).lower()
+                    if any(p in lk for p in SECRET_KEY_PATTERNS):
+                        out[k] = "<redacted>"
+                    else:
+                        out[k] = redact_tool_input(v)
+                return out
+            if isinstance(value, list):
+                return [redact_tool_input(v) for v in value]
+            return value
+
+        def serialize_tool_input(tool_input):
+            # Returns (text, truncated). text is None if serialization fails
+            # entirely (caller skips writing the field).
+            try:
+                redacted = redact_tool_input(tool_input)
+                text = json.dumps(redacted, ensure_ascii=False, indent=2, sort_keys=True)
+            except Exception:
+                return None, False
+            encoded = text.encode("utf-8")
+            if len(encoded) > TOOL_INPUT_SIZE_CAP:
+                # Slice on byte boundary then drop any trailing partial code
+                # point — Text view renders garbled glyphs otherwise.
+                text = encoded[:TOOL_INPUT_SIZE_CAP].decode("utf-8", errors="ignore")
+                return text, True
+            return text, False
+
+        def write_stop_request(payload):
+            # Stop hook is fire-and-forget: write the pending file, exit 0.
+            # No response is ever read. Swift's poll loop surfaces the toast
+            # and removes the file when the user dismisses it (or after the
+            # 1h staleness sweep for orphans).
+            ensure_dirs()
+            session_id = str(payload.get("session_id") or "")
+            cwd = str(payload.get("cwd") or os.getcwd())
+            transcript = str(payload.get("transcript_path") or "")
+            now = time.time()
+            seed = "{}|{}".format(session_id or "anon", now)
+            request_id = "stop-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+            request_path = os.path.join(PENDING, "{}.json".format(request_id))
+            request = {
+                "id": request_id,
+                "schemaVersion": SCHEMA_VERSION,
+                "kind": "completion",
+                "sessionId": session_id,
+                "toolName": "Stop",
+                "projectPath": cwd,
+                "summary": "Session 完成了一回合任务",
+                "matchValue": "",
+                "receivedAt": now,
+                "completedAt": now,
+                "transcriptPath": transcript,
+            }
+            tmp = request_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(request, f, ensure_ascii=False, indent=2, sort_keys=True)
+            os.replace(tmp, request_path)
+
         # --- Main ---
 
         def main():
@@ -622,13 +782,18 @@ enum ClaudePermissionHook {
             event_name = payload.get("hook_event_name")
             tool_name = str(payload.get("tool_name") or "")
             is_question_tool = tool_name in ("AskUserQuestion", "AskFollowupQuestion")
-            # Two events feed Session Cove now: legacy PermissionRequest
-            # (yes/deny/always) and PreToolUse for the interactive question
-            # tools. The Claude settings.json matcher already restricts
-            # PreToolUse traffic to those two tool names, but we re-check here
-            # so a wildcard registration upstream can't accidentally drown the
-            # script in unrelated PreToolUse calls.
+            # Three events feed Session Cove: legacy PermissionRequest
+            # (yes/deny/always), PreToolUse for AskUserQuestion-style typed
+            # answers, and Stop for "session finished a turn" toasts.
             is_question_event = event_name == "PreToolUse" and is_question_tool
+            is_stop_event = event_name == "Stop"
+
+            if is_stop_event:
+                # Fire-and-forget: write completion request and exit 0
+                # immediately. Stop hook contract has no `decision` stdout,
+                # so blocking would stall every turn boundary.
+                write_stop_request(payload)
+                return 0
 
             if event_name != "PermissionRequest" and not is_question_event:
                 return 0
@@ -670,14 +835,25 @@ enum ClaudePermissionHook {
                 "summary": stable_summary(payload),
                 "matchValue": extract_match_value(payload),
                 "receivedAt": time.time(),
+                "schemaVersion": SCHEMA_VERSION,
             }
             if is_question_event:
                 request.update({
                     "kind": "question",
-                    "schemaVersion": 2,
                     "expectsAnswer": True,
                     "questions": build_questions(payload),
                 })
+            else:
+                # Approval path: ship the raw tool_input (redacted, capped)
+                # so the chevron / expanded detail panel can render the full
+                # bash command, write content, edit diff, etc. Question
+                # path skips this — its tool_input is already surfaced as
+                # questions[] and re-emitting it would risk leaking values
+                # the user typed in a prior round.
+                serialized, truncated = serialize_tool_input(tool_input)
+                if serialized is not None:
+                    request["toolInputJSON"] = serialized
+                    request["toolInputTruncated"] = truncated
 
             tmp = request_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:

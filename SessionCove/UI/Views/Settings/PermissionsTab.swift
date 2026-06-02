@@ -2,9 +2,35 @@ import SwiftUI
 
 struct PermissionsTab: View {
     @EnvironmentObject var allowlist: AllowlistStore
+    @EnvironmentObject var settings: CoveSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Approval popup behavior — preferences for how the ping card
+            // surfaces the request, not allowlist rules per se. Lives in
+            // the Permissions tab because that's where users mentally group
+            // "anything about approving Claude's tool calls".
+            VStack(alignment: .leading, spacing: 8) {
+                Text("权限审批弹窗")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Toggle(isOn: $settings.approvalExpandByDefault) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("默认展开详情面板")
+                        Text("打开审批弹窗时直接展示完整 tool_input(命令、文件路径、参数)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
+
+            Divider()
+
             Text("已授权的工具调用规则")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)

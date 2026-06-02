@@ -65,6 +65,7 @@ final class CoveSettings: ObservableObject {
         case notchTrigger     = "coveNotchTrigger"
         case showArchived     = "showArchivedSessions"
         case preferredTerminal = "covePreferredTerminal"
+        case approvalExpandByDefault = "coveApprovalExpandByDefault"
     }
 
     /// Allowed range for `contentFontSize`. Exposed for PR 2's slider.
@@ -158,6 +159,17 @@ final class CoveSettings: ObservableObject {
         }
     }
 
+    /// When true, the approval ping card opens with its detail panel already
+    /// expanded — so users who always want to see the full tool_input don't
+    /// have to click the chevron every time. Default false (keeps the
+    /// original 72pt strip for users who prefer compact).
+    @Published var approvalExpandByDefault: Bool {
+        didSet {
+            guard !bootstrap else { return }
+            persist(approvalExpandByDefault, .approvalExpandByDefault)
+        }
+    }
+
     /// User-selected terminal for resume operations. `nil` (the default)
     /// means "auto-detect" — `TerminalDetector.resolvedTerminal()` will
     /// fall back to ancestor detection or installed-list cascade. Set
@@ -238,6 +250,15 @@ final class CoveSettings: ObservableObject {
             self.preferredTerminal = kind
         } else {
             self.preferredTerminal = nil
+        }
+
+        // Default false; explicit-key check so a future "default true" flip
+        // doesn't retroactively enable the flag for users who already touched
+        // it (matches the soundEnabled / soundVolume defaulting pattern above).
+        if defaults.object(forKey: Key.approvalExpandByDefault.rawValue) != nil {
+            self.approvalExpandByDefault = defaults.bool(forKey: Key.approvalExpandByDefault.rawValue)
+        } else {
+            self.approvalExpandByDefault = false
         }
 
         bootstrap = false

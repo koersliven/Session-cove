@@ -37,7 +37,13 @@ struct CoveNotchView: View {
                     Group {
                         switch request.kind {
                         case .approval:
-                            PermissionPingCard(request: request) { decision in
+                            PermissionPingCard(
+                                request: request,
+                                isExpanded: Binding(
+                                    get: { viewModel.approvalExpanded },
+                                    set: { viewModel.approvalExpanded = $0 }
+                                )
+                            ) { decision in
                                 viewModel.decideHookRequest(decision)
                             }
                         case .question:
@@ -50,6 +56,13 @@ struct CoveNotchView: View {
                                     viewModel.decideHookRequest(.deny)
                                 }
                             )
+                        case .completion:
+                            CompletionPingCard(
+                                request: request,
+                                resolvedSession: viewModel.findSession(byId: request.sessionId ?? "")
+                            ) { decision in
+                                viewModel.decideHookRequest(decision)
+                            }
                         }
                     }
                     .padding(.horizontal, 12)
@@ -116,9 +129,15 @@ struct CoveNotchView: View {
         case .peeking: return 220
         case .opened: return 480
         case .popping:
-            // Question requests need taller real estate for ScrollView +
-            // options + Submit row. Approval (yes/deny/always) stays compact.
-            return viewModel.pendingHookRequest?.kind == .question ? 360 : 120
+            // Kind-aware popping height. Approval grows from 120 (collapsed)
+            // to 240 (chevron expanded) to surface the tool_input detail
+            // panel. Question still gets the 360pt form. Completion is a
+            // fixed 120pt toast (mirrors approval collapsed).
+            switch viewModel.pendingHookRequest?.kind {
+            case .question: return 360
+            case .completion: return 120
+            case .approval, .none: return viewModel.approvalExpanded ? 240 : 120
+            }
         }
     }
 

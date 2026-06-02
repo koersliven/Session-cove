@@ -43,12 +43,18 @@ final class CoveViewModel: @unchecked Sendable {
     var pendingHookRequest: HookPermissionRequest?
     var lastHookDecision: HookApprovalDecision?
     var hookIntegrationError: String?
+    /// True when the user clicked the chevron on PermissionPingCard to see
+    /// the full tool_input. Drives both pet ping height and notch popping
+    /// height so the panel can grow from 72→240. Reset to false whenever
+    /// `pendingHookRequest.id` changes.
+    var approvalExpanded: Bool = false
     private var modeBeforeInterruption: CoveUIMode?
 
     private var watcher: SessionWatcher?
     private var refreshTask: Task<Void, Never>?
     private var hookPollTask: Task<Void, Never>?
     private var collapseTimer: Task<Void, Never>?
+    private var completionDismissTimer: Task<Void, Never>?
 
     /// Invoked when the user finishes dragging the pet mascot.
     /// Window controller injects this on init to persist the new anchor without
@@ -66,6 +72,19 @@ final class CoveViewModel: @unchecked Sendable {
         case .compact: .compact
         case .permissionInterruption: .ping
         default: .expanded
+        }
+    }
+
+    /// Pet-mode ping frame height + notch popping height, both kind-aware
+    /// and approval-expanded-aware. Single source of truth that hosts
+    /// (CoveRootView pet, CoveNotchView notch) read off the view model.
+    /// 72 (approval collapsed) / 240 (approval expanded) / 360 (question) / 120 (completion).
+    var pingHeight: CGFloat {
+        guard let kind = pendingHookRequest?.kind else { return 72 }
+        switch kind {
+        case .approval: return approvalExpanded ? 240 : 72
+        case .question: return 360
+        case .completion: return 120
         }
     }
 
@@ -260,6 +279,30 @@ final class CoveViewModel: @unchecked Sendable {
         updatePendingHookRequest(HookPermissionRequest.mock(for: selectedIsland ?? islands.first))
     }
 
+    /// Mock for the chevron / expanded detail path (Feature 2).
+    func showMockApprovalWithDetail() {
+        updatePendingHookRequest(HookPermissionRequest.mockWithDetail(for: selectedIsland ?? islands.first))
+    }
+
+    /// Mock for the Stop / completion toast (Feature 1).
+    func showMockCompletionRequest() {
+        updatePendingHookRequest(HookPermissionRequest.mockCompletion(for: selectedIsland ?? islands.first))
+    }
+
+    /// Look up a SessionRecord by Claude session-id across all islands.
+    /// Used by the completion toast's "打开 session" button to resume the
+    /// just-finished session. Returns nil if the SessionScanner hasn't yet
+    /// ingested the session's JSONL — caller falls back to launchNew.
+    func findSession(byId id: String) -> SessionRecord? {
+        guard !id.isEmpty else { return nil }
+        for island in islands {
+            if let match = island.sessions.first(where: { $0.id == id }) {
+                return match
+            }
+        }
+        return nil
+    }
+
     /// Mock for the .question kind path (stage 5 verification). Builds a
     /// request with three representative questions — single-choice radio,
     /// multi-choice checkbox, and an isSecret SecureField — so the upcoming
@@ -328,6 +371,23 @@ final class CoveViewModel: @unchecked Sendable {
         } catch {
             hookIntegrationError = error.localizedDescription
         }
+        // Completion-toast: `.openSession` focuses the live claude
+        // terminal that just finished the turn. We deliberately use
+        // `focusOrLaunch(sessionId:projectPath:)` instead of
+        // `resumeSession` because the SessionScanner may not have ingested
+        // the just-finished JSONL yet — but the claude *process* is still
+        // alive in its terminal (waiting for the next prompt), so we can
+        // locate it by `ps` regardless. Falling through to
+        // `resumeSession(SessionRecord)` would have failed to find a record
+        // and dropped to `launchNew`, opening a new terminal instead of
+        // focusing the existing one.
+        if request.kind == .completion, decision == .openSession,
+           !request.projectPath.isEmpty {
+            SessionResumer.focusOrLaunch(
+                sessionId: request.sessionId ?? "",
+                projectPath: request.projectPath
+            )
+        }
         updatePendingHookRequest(nil)
     }
 
@@ -377,6 +437,22 @@ final class CoveViewModel: @unchecked Sendable {
 
         let previousID = pendingHookRequest?.id
         pendingHookRequest = request
+        // Reset per-request UI state whenever the id changes (or clears).
+        // approvalExpanded must not bleed from one request to the next; the
+        // completion auto-dismiss timer must not fire after the toast it
+        // belongs to has been replaced by something newer. When the new
+        // request is an approval and the user opted into "默认展开", flip
+        // approvalExpanded on instead of off so the detail panel renders
+        // immediately without a chevron click.
+        if previousID != request?.id {
+            let preferExpanded = MainActor.assumeIsolated {
+                CoveSettings.shared.approvalExpandByDefault
+            }
+            approvalExpanded = (request?.kind == .approval) && preferExpanded
+            completionDismissTimer?.cancel()
+            completionDismissTimer = nil
+        }
+
         guard let request else {
             if uiMode == .permissionInterruption {
                 if let restored = modeBeforeInterruption, restored != .permissionInterruption {
@@ -401,21 +477,44 @@ final class CoveViewModel: @unchecked Sendable {
                 FullscreenAppDetector.shared.isFullscreen
             }
 
+            // Completion toasts shouldn't preempt expanded modes
+            // (.harborOverview/.projectIsland/.sessionFocus) — they're
+            // notifications, not blockers. Yellow status dot still lights
+            // and the user can hand-toggle when ready.
+            let isCompletion = request.kind == .completion
+            let modeAllowsCompletionPreempt: Bool = {
+                switch uiMode {
+                case .pet, .compact, .permissionInterruption: return true
+                case .harborOverview, .projectIsland, .sessionFocus: return false
+                }
+            }()
+            let allowAutoPresent = !suppressAutoPresent && (!isCompletion || modeAllowsCompletionPreempt)
+
             if uiMode != .permissionInterruption {
                 modeBeforeInterruption = uiMode
             }
             selectedIsland = islands.first { $0.path == request.projectPath } ?? selectedIsland
             selectedSession = selectedIsland?.sessions.sorted { $0.lastModified > $1.lastModified }.first ?? selectedSession
 
-            // Pet mode used to early-return here (sonarPing only, no UI),
-            // forcing users to hunt down a tiny yellow dot and click. Now
-            // pet routes through the same .permissionInterruption path as
-            // every other mode — ping frame slides out automatically.
-            if !suppressAutoPresent {
+            if allowAutoPresent {
                 uiMode = .permissionInterruption
                 openReason = .notification
             }
             CoveSoundManager.shared.play(.sonarPing)
+
+            // Completion toast auto-dismisses after 30s so abandoned
+            // notifications don't accumulate. Timer references the request
+            // by id; if a fresher request lands first, the early `cancel`
+            // above already invalidated this one's hook.
+            if isCompletion {
+                let targetID = request.id
+                completionDismissTimer = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(30))
+                    guard !Task.isCancelled, let self,
+                          self.pendingHookRequest?.id == targetID else { return }
+                    self.decideHookRequest(.acknowledge)
+                }
+            }
         }
     }
 
