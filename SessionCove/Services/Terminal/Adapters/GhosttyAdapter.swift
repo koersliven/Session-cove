@@ -1,8 +1,14 @@
 import Foundation
 
-/// Ghostty — launch only. AppleScript has no `do script` equivalent for
-/// Ghostty, so `focusSession` always returns false to trigger the next
-/// adapter or `launch` fallback. New windows go through `open -na`.
+/// Ghostty — half-adapted focus. Ghostty has no scripting bridge to
+/// target a specific tab/tty (the upstream issue tracker has an open
+/// vouch request for `+new-window` IPC via Unix-domain socket but it
+/// hasn't shipped). When the ancestor of the live `claude` pid is
+/// Ghostty, the best we can do is activate the Ghostty app so its
+/// window comes to the foreground — the user picks the right tab
+/// themselves with ⌘1/⌘2/.... Strictly better than returning false
+/// and falling through to `launch`, which would spawn a fresh
+/// `claude --resume` and duplicate the session.
 struct GhosttyAdapter: TerminalAdapter {
     let kind: TerminalKind = .ghostty
 
@@ -11,8 +17,7 @@ struct GhosttyAdapter: TerminalAdapter {
     }
 
     func focusSession(tty: String) -> Bool {
-        // Ghostty exposes no scripting bridge for command injection.
-        false
+        TerminalAdapterHelpers.activateRunningApp(bundleID: kind.bundleID)
     }
 
     func launch(command: String, cwd: String) throws {

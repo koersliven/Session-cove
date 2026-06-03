@@ -28,9 +28,12 @@ struct AlacrittyAdapter: TerminalAdapter {
     }
 
     func focusSession(tty: String) -> Bool {
-        // Alacritty has no `osascript` bridge (and `--socket` is opt-in via a
-        // patched build only). Always fall through to launch.
-        false
+        // Alacritty has no per-tab focus API (and `--socket` is opt-in
+        // via a patched build only). Activate the running app so its
+        // window comes to the foreground; the user picks the right tab
+        // themselves. Returns false when Alacritty isn't running, which
+        // lets the resumer try the next adapter.
+        TerminalAdapterHelpers.activateRunningApp(bundleID: kind.bundleID)
     }
 
     func launch(command: String, cwd: String) throws {

@@ -260,6 +260,23 @@ enum TerminalAdapterHelpers {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
     }
 
+    /// Best-effort "bring the running terminal app to the foreground" —
+    /// for adapters without a scripting bridge that can target a specific
+    /// tab/tty (Ghostty / Warp / Alacritty). Strictly better than the
+    /// previous always-false → launch-fallback path, which would have
+    /// spawned a fresh `claude --resume` and duplicated the session.
+    /// Returns false when no running instance exists, in which case the
+    /// caller falls back to the next adapter in the focus chain.
+    static func activateRunningApp(bundleID: String) -> Bool {
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        guard let app = running.first else { return false }
+        if #available(macOS 14.0, *) {
+            return app.activate()
+        } else {
+            return app.activate(options: [.activateAllWindows])
+        }
+    }
+
     /// Returns true when a CLI binary exists on disk and is executable.
     static func isExecutablePresent(_ path: String) -> Bool {
         let fm = FileManager.default

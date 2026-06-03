@@ -16,9 +16,12 @@ struct WarpAdapter: TerminalAdapter {
     }
 
     func focusSession(tty: String) -> Bool {
-        // Warp does not expose a scripting bridge for focusing a specific
-        // tty/session. Always fall through.
-        false
+        // Warp has no per-tab focus API; activate the app so its window
+        // comes to the foreground and the user picks the right tab.
+        // Strictly better than falling through to a launch that would
+        // duplicate the session. Returns false when Warp isn't running,
+        // letting the resumer try the next adapter in the focus chain.
+        TerminalAdapterHelpers.activateRunningApp(bundleID: kind.bundleID)
     }
 
     func launch(command: String, cwd: String) throws {
