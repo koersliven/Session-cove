@@ -25,9 +25,9 @@ struct AboutTab: View {
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 18) {
-                Link("GitHub", destination: URL(string: "https://github.com/lipu/session-cove")!)
-                Link("Issues", destination: URL(string: "https://github.com/lipu/session-cove/issues")!)
-                Link("Star", destination: URL(string: "https://github.com/lipu/session-cove")!)
+                Link("GitHub", destination: URL(string: "https://github.com/koersliven/Session-cove")!)
+                Link("Issues", destination: URL(string: "https://github.com/koersliven/Session-cove/issues")!)
+                Link("Star", destination: URL(string: "https://github.com/koersliven/Session-cove")!)
             }
 
             Spacer()
