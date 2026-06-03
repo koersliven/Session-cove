@@ -85,6 +85,10 @@ enum ClaudePermissionHook {
             let transcriptPath = object["transcriptPath"] as? String
             let completedAt = (object["completedAt"] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
             let lastMessagePreview = object["lastMessagePreview"] as? String
+            // Schema v3 added providerId. Older payloads without the field
+            // are written by the legacy Claude-only python hook, so default
+            // to "claude" — the only provider currently registered.
+            let providerId = (object["providerId"] as? String) ?? "claude"
 
             let request = HookPermissionRequest(
                 id: id,
@@ -94,6 +98,7 @@ enum ClaudePermissionHook {
                 summary: summary,
                 matchValue: matchValue,
                 receivedAt: receivedAt,
+                providerId: providerId,
                 kind: kind,
                 questions: questions,
                 toolInputJSON: toolInputJSON,
@@ -353,7 +358,10 @@ enum ClaudePermissionHook {
         let existingData = try? Data(contentsOf: settingsURL)
         var root: [String: Any] = existingData.flatMap(HookConfigParser.parseJSONObject(from:)) ?? [:]
         var hooks = root["hooks"] as? [String: Any] ?? [:]
-        let scriptCommand = "/usr/bin/python3 \(shellQuoted(scriptURL.path))"
+        // `--provider claude` tells the bridge script which dialect to emit
+        // on stdout. Schema v4 routes via the bridge's DIALECTS table; future
+        // providers (qoder/cursor) will register their own scriptCommand here.
+        let scriptCommand = "/usr/bin/python3 \(shellQuoted(scriptURL.path)) --provider claude"
 
         let existingEntries = hooks["PermissionRequest"] as? [[String: Any]] ?? []
         let preservedEntries = existingEntries.filter { entry in
@@ -477,9 +485,12 @@ enum ClaudePermissionHook {
         SESSION_TRUST_PATH = os.path.join(ROOT, "trusted_sessions.json")
         TIMEOUT_SECONDS = 24 * 60 * 60
 
-        # Schema v3 (2026-06-02): adds toolInputJSON + Stop completion events.
-        # Older v2 payloads still decode on the Swift side via decodeIfPresent.
-        SCHEMA_VERSION = 3
+        # Schema v4 (2026-06-03): bridgeScript now accepts `--provider <id>`
+        # and routes stdout through a per-provider DIALECTS table. The
+        # `providerId` field on each request mirrors the parsed flag.
+        # Older v2/v3 payloads still decode on the Swift side via
+        # decodeIfPresent (legacy files default providerId to "claude").
+        SCHEMA_VERSION = 4
         # tool_input serialization cap. 8 KB is generous for shell commands +
         # most Edit diffs, and small enough that SwiftUI Text + ScrollView
         # render without slowdown. MCP payloads larger than this get truncated.
@@ -493,53 +504,95 @@ enum ClaudePermissionHook {
             os.makedirs(PENDING, exist_ok=True)
             os.makedirs(RESPONSES, exist_ok=True)
 
-        # --- Output helpers (format matches Ping Island exactly) ---
+        # --- Provider dialects ---------------------------------------------
+        # Each provider registers two emitters keyed by event class:
+        #   permission(decision) — stdout for legacy approval-style hooks.
+        #     `decision` is the dict written by Swift, or None for
+        #     pass-through/allow shortcuts.
+        #   question(decision, tool_input) — stdout for typed-answer hooks.
+        # The legacy claude path (PermissionRequest + PreToolUse stdout
+        # shapes) is preserved bit-for-bit by emit_claude_*.
 
-        def print_allow():
-            print(json.dumps({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}, ensure_ascii=False), flush=True)
+        def emit_claude_permission(decision):
+            if isinstance(decision, dict) and decision.get("decision") == "deny":
+                obj = {"behavior": "deny", "message": "Denied in Session Cove."}
+            else:
+                obj = {"behavior": "allow"}
+            print(json.dumps({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":obj}}, ensure_ascii=False), flush=True)
 
-        def default_pass_through(is_question_event):
+        def emit_claude_question(decision, tool_input):
+            # Question event closed without an answer (timeout, Session Cove
+            # cancellation, or guard against a non-answer decision sneaking in)
+            # — stay silent so Claude falls back to its built-in terminal
+            # question flow rather than us injecting a guessed answer.
+            if not isinstance(decision, dict) or decision.get("decision") != "answer":
+                return
+            # AskUserQuestion / AskFollowupQuestion completion. Claude's
+            # PreToolUse hookSpecificOutput.updatedInput **replaces the
+            # entire tool_input** before dispatch — earlier we wrote just
+            # `{"answers": {...}}` and Claude rejected the call with
+            # "required parameter `questions` is missing" because we'd
+            # wiped the original schema. Echo the original tool_input
+            # back and append `answers` alongside, so all required
+            # fields (questions, etc.) survive.
+            answers = decision.get("answers") or {}
+            merged = dict(tool_input) if isinstance(tool_input, dict) else {}
+            merged["answers"] = answers
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "updatedInput": merged,
+                }
+            }, ensure_ascii=False), flush=True)
+
+        def emit_cursor_permission(decision):
+            # Step 9 will fill this in once Cursor's hook contract is wired.
+            # For now: warn and emit nothing on stdout so Cursor's own flow
+            # isn't accidentally short-circuited by a malformed Claude shape.
+            sys.stderr.write("[session-cove] cursor dialect not yet wired\\n")
+
+        def emit_cursor_question(decision, tool_input):
+            sys.stderr.write("[session-cove] cursor dialect not yet wired\\n")
+
+        # Qoder is assumed to share Claude's PermissionRequest/PreToolUse
+        # contract for now; step 8 will validate against the real Qoder
+        # client and split this into emit_qoder_* if anything diverges.
+        DIALECTS = {
+            "claude": {"permission": emit_claude_permission, "question": emit_claude_question},
+            "qoder":  {"permission": emit_claude_permission, "question": emit_claude_question},
+            "cursor": {"permission": emit_cursor_permission, "question": emit_cursor_question},
+        }
+
+        # --- Output helpers (format matches Ping Island exactly for claude) ---
+
+        def _dialect(provider_id):
+            return DIALECTS.get(provider_id) or DIALECTS["claude"]
+
+        def print_allow(provider_id):
+            # Fast-path emitter for allowlist matches and trusted-session
+            # shortcuts — routes through the permission dialect so the
+            # stdout shape matches whichever provider is wired.
+            _dialect(provider_id)["permission"](None)
+
+        def default_pass_through(is_question_event, provider_id):
             # Fired when the pending file disappears (Session Cove cancelled it)
             # or when we time out without a decision. Approval path -> emit allow
             # so the underlying tool keeps running. Question path -> stay silent;
             # Claude will fall back to its built-in terminal question prompt
             # rather than us injecting a guessed answer.
+            dialect = _dialect(provider_id)
             if is_question_event:
-                return
-            print_allow()
-
-        def output_decision(decision, is_question_event=False, tool_input=None):
-            value = decision.get("decision")
-            if value == "answer":
-                # AskUserQuestion / AskFollowupQuestion completion. Claude's
-                # PreToolUse hookSpecificOutput.updatedInput **replaces the
-                # entire tool_input** before dispatch — earlier we wrote just
-                # `{"answers": {...}}` and Claude rejected the call with
-                # "required parameter `questions` is missing" because we'd
-                # wiped the original schema. Echo the original tool_input
-                # back and append `answers` alongside, so all required
-                # fields (questions, etc.) survive.
-                answers = decision.get("answers") or {}
-                merged = dict(tool_input) if isinstance(tool_input, dict) else {}
-                merged["answers"] = answers
-                print(json.dumps({
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "allow",
-                        "updatedInput": merged,
-                    }
-                }, ensure_ascii=False), flush=True)
-                return
-            if is_question_event:
-                # Question event closed without an answer (shouldn't happen via
-                # the Session Cove form, but guard anyway). Stay silent so
-                # Claude falls back to its terminal flow.
-                return
-            if value == "deny":
-                obj = {"behavior": "deny", "message": "Denied in Session Cove."}
+                dialect["question"](None, None)
             else:
-                obj = {"behavior": "allow"}
-            print(json.dumps({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":obj}}, ensure_ascii=False), flush=True)
+                dialect["permission"](None)
+
+        def output_decision(decision, is_question_event=False, tool_input=None, provider_id="claude"):
+            dialect = _dialect(provider_id)
+            if is_question_event:
+                dialect["question"](decision, tool_input)
+            else:
+                dialect["permission"](decision)
 
         # --- Fast-path checks ---
 
@@ -736,7 +789,7 @@ enum ClaudePermissionHook {
                 return text, True
             return text, False
 
-        def write_stop_request(payload):
+        def write_stop_request(payload, provider_id):
             # Stop hook is fire-and-forget: write the pending file, exit 0.
             # No response is ever read. Swift's poll loop surfaces the toast
             # and removes the file when the user dismisses it (or after the
@@ -752,6 +805,7 @@ enum ClaudePermissionHook {
             request = {
                 "id": request_id,
                 "schemaVersion": SCHEMA_VERSION,
+                "providerId": provider_id,
                 "kind": "completion",
                 "sessionId": session_id,
                 "toolName": "Stop",
@@ -769,8 +823,28 @@ enum ClaudePermissionHook {
 
         # --- Main ---
 
+        def parse_provider_arg(argv):
+            # Parse `--provider <id>` early. Anything else on the command
+            # line is ignored — we don't accept positional args today.
+            args = list(argv[1:])
+            i = 0
+            while i < len(args):
+                if args[i] == "--provider" and i + 1 < len(args):
+                    return args[i + 1]
+                i += 1
+            return "claude"
+
         def main():
             ensure_dirs()
+            provider_id = parse_provider_arg(sys.argv)
+            if provider_id not in DIALECTS:
+                # Unknown provider — warn to stderr and fall back fully so
+                # both the on-disk providerId and the stdout dialect stay
+                # consistent. Cursor is a recognized provider with stub
+                # emitters, so it does not hit this branch.
+                sys.stderr.write("[session-cove] unknown provider '{}', falling back to claude\\n".format(provider_id))
+                provider_id = "claude"
+
             raw = sys.stdin.read()
             if not raw.strip():
                 return 0
@@ -792,7 +866,7 @@ enum ClaudePermissionHook {
                 # Fire-and-forget: write completion request and exit 0
                 # immediately. Stop hook contract has no `decision` stdout,
                 # so blocking would stall every turn boundary.
-                write_stop_request(payload)
+                write_stop_request(payload, provider_id)
                 return 0
 
             if event_name != "PermissionRequest" and not is_question_event:
@@ -812,10 +886,10 @@ enum ClaudePermissionHook {
             # user can answer; nothing to "pre-approve" for them.
             if not is_question_event:
                 if match_allowlist(payload):
-                    print_allow()
+                    print_allow(provider_id)
                     return 0
                 if session_id and session_id in load_trusted_sessions():
-                    print_allow()
+                    print_allow(provider_id)
                     return 0
 
             request_id = make_request_id(payload)
@@ -829,6 +903,7 @@ enum ClaudePermissionHook {
 
             request = {
                 "id": request_id,
+                "providerId": provider_id,
                 "sessionId": session_id,
                 "toolName": tool_name or "Tool",
                 "projectPath": str(payload.get("cwd") or os.getcwd()),
@@ -866,7 +941,7 @@ enum ClaudePermissionHook {
                 if os.path.exists(response_path):
                     with open(response_path, "r", encoding="utf-8") as f:
                         decision = json.load(f)
-                    output_decision(decision, is_question_event=is_question_event, tool_input=tool_input)
+                    output_decision(decision, is_question_event=is_question_event, tool_input=tool_input, provider_id=provider_id)
                     try:
                         os.remove(request_path)
                     except OSError:
@@ -888,13 +963,13 @@ enum ClaudePermissionHook {
                     if os.path.exists(response_path):
                         with open(response_path, "r", encoding="utf-8") as f:
                             decision = json.load(f)
-                        output_decision(decision, is_question_event=is_question_event, tool_input=tool_input)
+                        output_decision(decision, is_question_event=is_question_event, tool_input=tool_input, provider_id=provider_id)
                         try:
                             os.remove(response_path)
                         except OSError:
                             pass
                         return 0
-                    default_pass_through(is_question_event)
+                    default_pass_through(is_question_event, provider_id)
                     return 0
                 # Refresh mtime every 30s so the Swift-side stale-file
                 # sweeper (24 h cutoff) doesn't reclaim a real pending
@@ -908,7 +983,7 @@ enum ClaudePermissionHook {
                         pass
                     last_touch = now
                 time.sleep(0.2)
-            default_pass_through(is_question_event)
+            default_pass_through(is_question_event, provider_id)
             return 0
 
         if __name__ == "__main__":

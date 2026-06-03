@@ -87,6 +87,10 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
     let summary: String
     let matchValue: String
     let receivedAt: Date
+    /// Identifier of the agent provider that emitted this request (e.g. "claude").
+    /// Defaults to `"claude"` so legacy v3 JSON without this field still decodes
+    /// and surfaces under the Claude provider profile.
+    var providerId: String
     /// `.approval` for legacy yes/deny payloads, `.question` for AskUserQuestion-style
     /// requests, `.completion` for Stop-hook task-done toasts. Defaults to
     /// `.approval` so JSON written by older python hooks (no `kind` field)
@@ -116,6 +120,7 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
         summary: String,
         matchValue: String,
         receivedAt: Date,
+        providerId: String = "claude",
         kind: HookRequestKind = .approval,
         questions: [HookInterventionQuestion] = [],
         toolInputJSON: String? = nil,
@@ -131,6 +136,7 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
         self.summary = summary
         self.matchValue = matchValue
         self.receivedAt = receivedAt
+        self.providerId = providerId
         self.kind = kind
         self.questions = questions
         self.toolInputJSON = toolInputJSON
@@ -142,6 +148,7 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, sessionId, toolName, projectPath, summary, matchValue, receivedAt
+        case providerId
         case kind, questions
         case toolInputJSON, toolInputTruncated
         case transcriptPath, completedAt, lastMessagePreview
@@ -159,6 +166,7 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
         self.summary = try container.decode(String.self, forKey: .summary)
         self.matchValue = try container.decode(String.self, forKey: .matchValue)
         self.receivedAt = try container.decode(Date.self, forKey: .receivedAt)
+        self.providerId = try container.decodeIfPresent(String.self, forKey: .providerId) ?? "claude"
         self.kind = try container.decodeIfPresent(HookRequestKind.self, forKey: .kind) ?? .approval
         self.questions = try container.decodeIfPresent([HookInterventionQuestion].self, forKey: .questions) ?? []
         self.toolInputJSON = try container.decodeIfPresent(String.self, forKey: .toolInputJSON)
@@ -178,7 +186,8 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
             projectPath: island?.path ?? "~/Work/session-cove",
             summary: "claude wants to run a model/tool request in this project island.",
             matchValue: "git status",
-            receivedAt: Date()
+            receivedAt: Date(),
+            providerId: "claude"
         )
     }
 
@@ -193,6 +202,7 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
             summary: "Bash: git status --porcelain | head -50",
             matchValue: "git status --porcelain | head -50",
             receivedAt: Date(),
+            providerId: "claude",
             toolInputJSON: """
             {
               "command": "git status --porcelain | head -50",
@@ -213,6 +223,7 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
             summary: "Session 完成了一回合任务",
             matchValue: "",
             receivedAt: Date(),
+            providerId: "claude",
             kind: .completion,
             transcriptPath: nil,
             completedAt: Date()
