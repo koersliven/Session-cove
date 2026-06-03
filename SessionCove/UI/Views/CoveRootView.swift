@@ -45,9 +45,16 @@ struct CoveRootView: View {
                 )
 
         case .expanded:
+            // Fill the entire hostingView (= panel size). With the prior
+            // .frame(500,460) + .padding(.top, 10) layout, SwiftUI
+            // rendered into a 500×470 inset and the surrounding 20×10pt
+            // of transparent panel edge produced a visual "rectangular
+            // residue at all four corners" — clipShape only rounded the
+            // SwiftUI content, but the panel's transparent margin still
+            // looked square against the desktop. Filling the panel makes
+            // the rounded clip land on the actual panel edge.
             expandedView
-                .frame(width: 500, height: 460)
-                .padding(.top, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -131,7 +138,12 @@ struct CoveRootView: View {
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        // No .shadow / no outer stroke. The panel is borderless + .clear,
+        // so SwiftUI's drop-shadow has no host space outside the panel
+        // and gets clipped — that produced the dark "halo at four
+        // corners" the user reported. Likewise an outer stroke only
+        // shows up along the corner curvature and reads as a thin grey
+        // ring against a low-contrast desktop. The flat clip is enough.
     }
 }

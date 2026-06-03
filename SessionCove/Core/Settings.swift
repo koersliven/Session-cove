@@ -66,6 +66,7 @@ final class CoveSettings: ObservableObject {
         case showArchived     = "showArchivedSessions"
         case preferredTerminal = "covePreferredTerminal"
         case approvalExpandByDefault = "coveApprovalExpandByDefault"
+        case silenceCompletionWhenTerminalFrontmost = "coveSilenceCompletionWhenTerminalFrontmost"
     }
 
     /// Allowed range for `contentFontSize`. Exposed for PR 2's slider.
@@ -170,6 +171,19 @@ final class CoveSettings: ObservableObject {
         }
     }
 
+    /// When true (default), suppress the completion toast if the user is
+    /// already focused on a terminal — they can see the result in their
+    /// own session and don't need an extra popup. Set to false to always
+    /// show the toast regardless of frontmost app. The pending file is
+    /// still cleaned up so the toast doesn't appear later when the user
+    /// switches away.
+    @Published var silenceCompletionWhenTerminalFrontmost: Bool {
+        didSet {
+            guard !bootstrap else { return }
+            persist(silenceCompletionWhenTerminalFrontmost, .silenceCompletionWhenTerminalFrontmost)
+        }
+    }
+
     /// User-selected terminal for resume operations. `nil` (the default)
     /// means "auto-detect" — `TerminalDetector.resolvedTerminal()` will
     /// fall back to ancestor detection or installed-list cascade. Set
@@ -259,6 +273,16 @@ final class CoveSettings: ObservableObject {
             self.approvalExpandByDefault = defaults.bool(forKey: Key.approvalExpandByDefault.rawValue)
         } else {
             self.approvalExpandByDefault = false
+        }
+
+        // Default true — terminal users who just finished a turn already
+        // see the result on their own screen.
+        if defaults.object(forKey: Key.silenceCompletionWhenTerminalFrontmost.rawValue) != nil {
+            self.silenceCompletionWhenTerminalFrontmost = defaults.bool(
+                forKey: Key.silenceCompletionWhenTerminalFrontmost.rawValue
+            )
+        } else {
+            self.silenceCompletionWhenTerminalFrontmost = true
         }
 
         bootstrap = false

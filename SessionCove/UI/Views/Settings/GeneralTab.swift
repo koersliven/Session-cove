@@ -42,6 +42,17 @@ struct GeneralTab: View {
                 }
             }
 
+            Section("通知") {
+                Toggle(isOn: $settings.silenceCompletionWhenTerminalFrontmost) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("终端在前台时静默完成提示")
+                        Text("当 iTerm / Terminal / Ghostty 等终端正在使用时,Claude 完成回合不再弹窗。关闭后任何场景都弹。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             // Terminal selection. Bound to `preferredTerminal` (Optional<TerminalKind>);
             // nil = auto-detect (the default), Some(kind) = user-pinned. Non-installed
             // kinds are surfaced with a "(未安装)" suffix rather than hidden, so the

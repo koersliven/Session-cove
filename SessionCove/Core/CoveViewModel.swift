@@ -492,6 +492,34 @@ final class CoveViewModel: @unchecked Sendable {
                 case .harborOverview, .projectIsland, .sessionFocus: return false
                 }
             }()
+
+            // "Don't notify when I'm already in the terminal" — if the
+            // user has a terminal frontmost, they'll see the result in
+            // their own session and don't need a popup. Quietly resolve
+            // the request so the pending file is cleaned up; auto-dismiss
+            // timer won't be needed since we're not surfacing the toast.
+            let suppressByTerminal: Bool = {
+                guard isCompletion else { return false }
+                let prefersSilence = MainActor.assumeIsolated {
+                    CoveSettings.shared.silenceCompletionWhenTerminalFrontmost
+                }
+                guard prefersSilence else { return false }
+                return TerminalDetector.isFrontmostAppATerminal()
+            }()
+            if suppressByTerminal {
+                // Drop the request silently. Pop pendingHookRequest so
+                // the polling guard doesn't keep re-surfacing it on the
+                // next tick. ClaudePermissionHook.resolve cleans up the
+                // pending file (no response written for completion).
+                do {
+                    try ClaudePermissionHook.resolve(request: request, decision: .acknowledge)
+                } catch {
+                    hookIntegrationError = error.localizedDescription
+                }
+                pendingHookRequest = nil
+                return
+            }
+
             let allowAutoPresent = !suppressAutoPresent && (!isCompletion || modeAllowsCompletionPreempt)
 
             if uiMode != .permissionInterruption {

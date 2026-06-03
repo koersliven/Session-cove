@@ -32,6 +32,19 @@ enum TerminalDetector {
         .alacritty
     ]
 
+    /// True when the currently frontmost macOS app is a known terminal.
+    /// Used by the completion-toast suppression flow: if the user is
+    /// already on a terminal they can see the result in-session — no
+    /// popup needed. Warp is included here (even though it's not in
+    /// `supportedKinds` for resume) because for the "is the user looking
+    /// at a terminal" question Warp absolutely counts.
+    static func isFrontmostAppATerminal() -> Bool {
+        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else {
+            return false
+        }
+        return TerminalKind.allCases.contains { $0.bundleID == bundleID }
+    }
+
     // MARK: - Public detection
 
     /// Terminals supported by Cove that are currently registered with
