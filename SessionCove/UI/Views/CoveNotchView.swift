@@ -129,14 +129,19 @@ struct CoveNotchView: View {
         case .peeking: return 220
         case .opened: return 480
         case .popping:
-            // Kind-aware popping height. Approval grows from 120 (collapsed)
-            // to 240 (chevron expanded) to surface the tool_input detail
-            // panel. Question still gets the 360pt form. Completion is a
-            // fixed 120pt toast (mirrors approval collapsed).
+            // Kind-aware popping height. AdaptiveHeader eats 60pt at the
+            // top of the notch in non-closed states, so add that on top
+            // of the actual card height. Pet mode doesn't have this
+            // header, which is why 120 was enough there but truncated
+            // the toast in notch mode.
+            //   approval collapsed: header 60 + card 72 + padding 16 + slack 12 = 160
+            //   approval expanded:  header 60 + card 240 + padding 16 + slack ≈ 320
+            //   completion:         header 60 + card 120 + padding 16 + slack 4  = 200
+            //   question:           header 60 + form 280 + padding 20            ≈ 360
             switch viewModel.pendingHookRequest?.kind {
             case .question: return 360
-            case .completion: return 120
-            case .approval, .none: return viewModel.approvalExpanded ? 240 : 120
+            case .completion: return 200
+            case .approval, .none: return viewModel.approvalExpanded ? 320 : 160
             }
         }
     }

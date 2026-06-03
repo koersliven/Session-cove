@@ -498,8 +498,14 @@ final class CoveViewModel: @unchecked Sendable {
             // their own session and don't need a popup. Quietly resolve
             // the request so the pending file is cleaned up; auto-dismiss
             // timer won't be needed since we're not surfacing the toast.
+            //
+            // Mock completion requests (id prefixed `stop-mock-`) bypass
+            // this — the Debug menu must always render the toast for
+            // visual verification, even when the user is testing from a
+            // terminal.
+            let isMockCompletion = request.id.hasPrefix("stop-mock-")
             let suppressByTerminal: Bool = {
-                guard isCompletion else { return false }
+                guard isCompletion, !isMockCompletion else { return false }
                 let prefersSilence = MainActor.assumeIsolated {
                     CoveSettings.shared.silenceCompletionWhenTerminalFrontmost
                 }

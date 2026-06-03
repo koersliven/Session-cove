@@ -392,6 +392,13 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
             viewModel.notchStatus = target
             modeBeforePopping = nil
             print("[NotchPopping] ← restored from popping → \(target)")
+        } else if pending != nil, status == .popping {
+            // Already popping but the request kind may have changed
+            // (approval resolved + completion arrived, or vice versa).
+            // Re-apply the panel frame so completion popping shrinks to
+            // the visible notch rect for non-blocking passthrough, and
+            // approval popping keeps the full panel for force-decision.
+            applyNotchStatus(.popping)
         }
     }
 
@@ -411,6 +418,33 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         // CoveNotchView. This eliminates the screen-top-left flash that
         // happened when AppKit redrew SwiftUI's outgoing snapshot at the
         // newly-resized panel's origin.
+        //
+        // EXCEPTION: popping + kind=completion is non-blocking. The user
+        // continues using other apps freely; only 知道了 / 打开会话 / 30s
+        // auto-dismiss clears the toast. With a fullWidth × 750 panel,
+        // the upper half of the screen sits under panel hit-testing — the
+        // sendEvent replay path (CGEvent.post) is supposed to forward
+        // clicks to the underlying app but in practice users still felt
+        // the screen "hijacked". Shrinking the panel to the visible
+        // notch rect (480×120) makes passthrough automatic: the panel
+        // simply doesn't exist outside the toast, so events reach the
+        // underlying app via normal AppKit routing.
+        // approval/question popping deliberately keeps the full panel
+        // since those need force-decision UX.
+        let isCompletionPopping = (
+            status == .popping &&
+            viewModel.pendingHookRequest?.kind == .completion
+        )
+        let canonicalFrame = NotchPlacementStrategy.panelFrame(for: screen)
+        let targetFrame: NSRect = isCompletionPopping
+            ? visibleNotchScreenRect(for: status, on: screen, kind: .completion)
+            : canonicalFrame
+        if panel.frame != targetFrame {
+            panel.setFrame(targetFrame, display: false, animate: false)
+            hostingView?.frame = NSRect(origin: .zero, size: targetFrame.size)
+            panel.contentView?.frame = NSRect(origin: .zero, size: targetFrame.size)
+        }
+
         switch status {
         case .closed:
             // Full passthrough: menu bar receives clicks behind the notch.
@@ -477,17 +511,17 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
         case .peeking: return CGSize(width: 480, height: 220)
         case .opened: return CGSize(width: 600, height: 480)
         case .popping:
-            // Mirror CoveNotchView.notchHeight: question 360 / completion 120 /
-            // approval 120 collapsed or 240 expanded. approvalExpanded read
-            // lazily via the closure caller (visibleNotchScreenRect / hit test
-            // closure) so a chevron toggle without notchStatus change still
-            // updates the hit-test rect.
+            // Mirror CoveNotchView.notchHeight — must stay in lockstep
+            // with that switch so panel hit-test rect matches the actual
+            // SwiftUI content box. AdaptiveHeader takes ~60pt at the top
+            // in non-closed states, so each card's design height needs
+            // header + card + padding.
             let height: CGFloat = {
                 switch kind {
                 case .question: return 360
-                case .completion: return 120
+                case .completion: return 200
                 case .approval, .none:
-                    return viewModel.approvalExpanded ? 240 : 120
+                    return viewModel.approvalExpanded ? 320 : 160
                 }
             }()
             return CGSize(width: 480, height: height)
