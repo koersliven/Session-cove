@@ -131,15 +131,56 @@ struct SessionResumer {
                 matches.append((pid: entry.pid, tty: entry.tty))
             }
         }
-        // Prefer the lowest-pid match (oldest claude process) when multiple
-        // sessions share the same cwd — the just-finished one is whichever
-        // claude is alive in that project; if more than one, ancestor-walk
-        // in focusExistingSession will pick the right terminal.
+
+        // Phase 2.5: when multiple claude processes share the same cwd
+        // (user opened several sessions in the same project), narrow them
+        // by checking which pid has the target session's transcript JSONL
+        // open. Claude Code keeps `~/.claude/projects/<encoded>/<sid>.jsonl`
+        // on a long-lived fd while the session is alive, so `lsof -p`
+        // listing per-pid open files is a reliable signal. Without this
+        // the fallback below picks min-pid which is wrong ~67% of the
+        // time when 3 sessions are running.
+        if !sessionId.isEmpty, matches.count > 1 {
+            for entry in matches {
+                if processHasOpenFile(pid: entry.pid, fileSubstring: sessionId) {
+                    print("[SessionResumer] Matched by transcript fd pid=\(entry.pid) tty=\(entry.tty) sid=\(sessionId.prefix(12))")
+                    return (tty: entry.tty, pid: entry.pid)
+                }
+            }
+            print("[SessionResumer] Multi-match (\(matches.count)) but no transcript fd hit for sid=\(sessionId.prefix(12)); falling back to min-pid")
+        }
+
+        // Fallback: lowest-pid (oldest) match. Single-match case lands
+        // here directly, which is the common scenario.
         if let first = matches.min(by: { $0.pid < $1.pid }) {
             print("[SessionResumer] Matched bare claude pid=\(first.pid) tty=\(first.tty) by cwd=\(targetCwd)")
             return (tty: first.tty, pid: first.pid)
         }
         return nil
+    }
+
+    /// True if `pid`'s open files (per `lsof -p`) contain `fileSubstring`
+    /// anywhere in the path. Used to disambiguate same-cwd claude
+    /// processes by checking which one has the target session's
+    /// transcript JSONL open. Returns false on any lsof error — the
+    /// caller falls back to a min-pid heuristic in that case.
+    private static func processHasOpenFile(pid: Int32, fileSubstring: String) -> Bool {
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        // -Fn emits filenames only, one per line prefixed with `n`. Cheaper
+        // to parse + dramatically less output than the default full table.
+        process.arguments = ["-p", String(pid), "-Fn"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do { try process.run() } catch { return false }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard let output = String(data: data, encoding: .utf8) else { return false }
+        return output.contains(fileSubstring)
     }
 
     private static func lsofCwd(pid: Int32) -> String? {

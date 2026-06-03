@@ -102,10 +102,9 @@ final class MenuActionTarget: NSObject {
     weak var viewModel: CoveViewModel?
 
     @objc func openSettings(_ sender: Any?) {
-        NSApp.activate(ignoringOtherApps: true)
-        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        }
+        // Drive our own window controller — `showSettingsWindow:` selector
+        // dispatch fails silently under .accessory activation policy.
+        SettingsWindowController.shared.show()
     }
 
     @objc func showAbout(_ sender: Any?) {

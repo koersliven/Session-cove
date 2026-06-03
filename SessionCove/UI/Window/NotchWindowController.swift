@@ -96,7 +96,17 @@ final class NotchWindowController: NSObject, CoveModeWindowController {
                         print("[OutsideClick] mouseDown outside notch while opened → forcing closed (loc=\(loc))")
                         self.viewModel.notchStatus = .closed
                     } else if self.viewModel.notchStatus == .popping {
-                        print("[OutsideClick] mouseDown outside notch while popping — IGNORED (force-decision policy) loc=\(loc)")
+                        // Force-decision for approval + question — Claude is
+                        // blocked waiting. Completion toasts are non-blocking:
+                        // the user continues using other apps without the toast
+                        // vanishing. Only 知道了 / 打开会话 or the 30s auto-
+                        // dismiss clears a completion.
+                        let isCompletion = self.viewModel.pendingHookRequest?.kind == .completion
+                        if isCompletion {
+                            print("[OutsideClick] mouseDown outside completion toast — kept (non-blocking)")
+                        } else {
+                            print("[OutsideClick] mouseDown outside notch while popping — IGNORED (force-decision policy) loc=\(loc)")
+                        }
                     }
                 }
             }

@@ -30,9 +30,16 @@ enum PetAnchorGeometry {
 /// on AppKit lifecycle and the placement math is unit-testable in isolation.
 @MainActor
 final class PetPlacementStrategy {
-    static let petSize = NSSize(width: 48, height: 48)
-    static let pingCardWidth: CGFloat = 340
-    static let pingHeight: CGFloat = 72
+    nonisolated static let petSize = NSSize(width: 48, height: 48)
+    /// Width of the ping-card content area inside the .ping panel. Total
+    /// panel width = `petSize.width + pingCardWidth`. Bumped from 340 to
+    /// 412 so the chevron capsule (now Chinese 详情 label + icon + arrow)
+    /// fits alongside the three approval buttons (拒绝 / 始终允许 / 允许)
+    /// without wrapping or overlapping. CoveRootView mirrors this total.
+    /// `nonisolated` so SwiftUI views (not @MainActor by default) can
+    /// reference it directly without an `assumeIsolated` shim.
+    nonisolated static let pingCardWidth: CGFloat = 412
+    nonisolated static let pingHeight: CGFloat = 72
 
     private(set) var petAnchor: NSPoint?
     private(set) var previousFrameSize: CoveFrameSize = .pet

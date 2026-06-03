@@ -2,33 +2,25 @@ import SwiftUI
 
 struct GeneralTab: View {
     @EnvironmentObject var settings: CoveSettings
-    /// Subscribes the view to the singleton via Swift Observation. `@State`
-    /// gives the property a stable storage slot across re-renders; reading
-    /// `transitionState.isTransitioning` inside `body` registers the view
-    /// for change tracking, so the Picker re-renders when WindowManager
-    /// flips the flag.
-    @State private var transitionState = ModeTransitionState.shared
 
     var body: some View {
         Form {
             Section("显示模式") {
-                VStack(spacing: 12) {
-                    HStack(spacing: 24) {
-                        ForEach(CoveSettings.DisplayMode.allCases) { mode in
-                            Image(systemName: mode.iconName)
-                                .font(.system(size: 28))
-                                .frame(maxWidth: .infinity)
-                                .foregroundStyle(mode == settings.displayMode ? Color.accentColor : Color.secondary)
+                // Custom two-button row — icon + label live in the same
+                // view, so the highlight never lags behind. The earlier
+                // (icon row) + (segmented Picker) layout had a visible
+                // mismatch during mode swap because the segmented control
+                // animates separately from the reactive icon row.
+                HStack(spacing: 12) {
+                    ForEach(CoveSettings.DisplayMode.allCases) { mode in
+                        DisplayModeOption(
+                            mode: mode,
+                            isSelected: mode == settings.displayMode
+                        ) {
+                            guard settings.displayMode != mode else { return }
+                            settings.displayMode = mode
                         }
                     }
-                    Picker("", selection: $settings.displayMode) {
-                        ForEach(CoveSettings.DisplayMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .disabled(transitionState.isTransitioning)
                 }
                 .padding(.vertical, 4)
             }
@@ -101,5 +93,40 @@ struct GeneralTab: View {
     /// (or installed-app state via NSWorkspace) re-renders this row.
     private var detectedTerminalName: String {
         TerminalDetector.resolvedTerminal().kind.displayName
+    }
+}
+
+/// Single-tile display-mode selector. Icon + label sit inside the same
+/// button, with one source of truth for the highlight state — eliminates
+/// the lag the earlier (icon row + segmented Picker) layout exhibited
+/// where the icon flipped instantly but the Picker text dragged behind.
+private struct DisplayModeOption: View {
+    let mode: CoveSettings.DisplayMode
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: mode.iconName)
+                    .font(.system(size: 24))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                Text(mode.title)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.18), lineWidth: 1)
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
     }
 }

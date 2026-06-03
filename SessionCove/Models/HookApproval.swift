@@ -51,25 +51,25 @@ enum HookApprovalDecision: Equatable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .deny: return "Deny"
-        case .allow: return "Yes"
-        case .allowSession: return "Session"
-        case .alwaysAllow: return "Always"
-        case .answer: return "Submit"
+        case .deny: return "拒绝"
+        case .allow: return "允许"
+        case .allowSession: return "本次会话"
+        case .alwaysAllow: return "始终允许"
+        case .answer: return "提交"
         case .acknowledge: return "知道了"
-        case .openSession: return "打开 session"
+        case .openSession: return "打开会话"
         }
     }
 
     var detail: String {
         switch self {
-        case .deny: return "Reject this model or tool request."
-        case .allow: return "Allow once for this request."
-        case .allowSession: return "Allow similar requests for this session."
-        case .alwaysAllow: return "Always allow matching requests."
-        case .answer: return "Submit answers back to Claude."
-        case .acknowledge: return "Dismiss completion toast."
-        case .openSession: return "Resume the just-finished session."
+        case .deny: return "拒绝这次工具调用。"
+        case .allow: return "本次允许这次工具调用。"
+        case .allowSession: return "本次会话内放行相似的工具调用。"
+        case .alwaysAllow: return "持久允许匹配的工具调用。"
+        case .answer: return "提交答案回到 Claude。"
+        case .acknowledge: return "忽略完成提示。"
+        case .openSession: return "回到刚完成任务的会话。"
         }
     }
 

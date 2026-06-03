@@ -133,6 +133,13 @@ final class PetWindowController: NSWindowController, NSWindowDelegate, CoveModeW
             if MouseEventReplay.isReplayed(event) { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // Expanded modes (harbor/island/session) collapse on
+                // outside-click; compact bar follows the same. The ping
+                // frame stays intact regardless of kind — approval/question
+                // are blockers that need a button press; completion toasts
+                // intentionally persist so the user keeps working without
+                // the toast vanishing under their cursor. Only 知道了 /
+                // 打开会话 or the 30s auto-dismiss clears a completion.
                 if self.viewModel.isExpanded || self.viewModel.uiMode == .compact {
                     self.viewModel.closeToPet()
                 }

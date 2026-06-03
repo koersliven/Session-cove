@@ -33,13 +33,16 @@ struct CoveRootView: View {
                 .frame(width: 300, height: 50)
 
         case .ping:
-            // Height comes from viewModel.pingHeight — kind-aware
-            // (approval=72/240, question=360, completion=120) so the same
-            // ping frame hosts every hook flavor without new CoveFrameSize
-            // cases. The .onChange listener at the top of body re-emits
-            // onFrameSizeChange whenever pingHeight shifts.
+            // Width matches PetPlacementStrategy (petSize + pingCardWidth);
+            // height kind-aware (approval=72/240, question=360,
+            // completion=120). The .onChange at the top of body re-emits
+            // onFrameSizeChange whenever pingHeight shifts so the panel
+            // resizes mid-popping when the chevron toggles.
             pingView
-                .frame(width: 388, height: viewModel.pingHeight)
+                .frame(
+                    width: PetPlacementStrategy.petSize.width + PetPlacementStrategy.pingCardWidth,
+                    height: viewModel.pingHeight
+                )
 
         case .expanded:
             expandedView
