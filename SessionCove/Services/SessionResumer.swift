@@ -32,9 +32,16 @@ struct SessionResumer {
                 return
             }
             // No TTY found, or TTY not present in any known terminal —
-            // open a fresh window with `claude --resume <id>` instead of
-            // leaving the user staring at an unrelated front-most app.
-            launchNewSession(sessionId: session.id, projectPath: session.projectPath)
+            // open a fresh window with the provider's resume command
+            // instead of leaving the user staring at an unrelated
+            // front-most app. Provider attribution comes from the
+            // session record itself so a future Qoder/Codex resume
+            // launches the right binary.
+            launchNewSession(
+                sessionId: session.id,
+                projectPath: session.projectPath,
+                providerId: session.providerId
+            )
         }
     }
 
@@ -44,15 +51,23 @@ struct SessionResumer {
     /// have the session id (from the Stop payload) and the project cwd.
     /// Same focus → launch fallback chain as `resume`, just without
     /// requiring a fully-built SessionRecord.
-    static func focusOrLaunch(sessionId: String, projectPath: String) {
-        print("[SessionResumer] focusOrLaunch sessionId=\(sessionId.prefix(12)) project=\(projectPath)")
+    static func focusOrLaunch(
+        sessionId: String,
+        projectPath: String,
+        providerId: String = "claude"
+    ) {
+        print("[SessionResumer] focusOrLaunch sessionId=\(sessionId.prefix(12)) project=\(projectPath) provider=\(providerId)")
         DispatchQueue.global(qos: .userInitiated).async {
             let lookup = findSessionTTY(sessionId: sessionId, projectPath: projectPath)
             if let lookup, focusExistingSession(tty: lookup.tty, pid: lookup.pid) {
                 print("[SessionResumer] focusOrLaunch focused tty=\(lookup.tty)")
                 return
             }
-            launchNewSession(sessionId: sessionId, projectPath: projectPath)
+            launchNewSession(
+                sessionId: sessionId,
+                projectPath: projectPath,
+                providerId: providerId
+            )
         }
     }
 
@@ -97,8 +112,12 @@ struct SessionResumer {
         guard process.terminationStatus == 0,
               let output = String(data: data, encoding: .utf8) else { return nil }
 
-        // Phase 2 candidates: bare `claude` processes (no sessionId in args).
-        // Resolve them by cwd against projectPath.
+        // Phase 2 candidates: bare agent processes (no sessionId in args).
+        // Resolve them by cwd against projectPath. The set of qualifying
+        // binaries comes from `AgentProviderRegistry.enabled()` so a future
+        // Qoder/Codex provider drops in without code edits — today the set
+        // is just `["claude"]` so behavior is byte-identical.
+        let agentBinaries = Set(enabledAgentBinaries())
         var claudePidTty: [(pid: Int32, tty: String)] = []
 
         for line in output.components(separatedBy: "\n") {
@@ -118,7 +137,7 @@ struct SessionResumer {
                 return (tty, pid)
             }
 
-            if commName == "claude" {
+            if agentBinaries.contains(commName) {
                 claudePidTty.append((pid, tty))
             }
         }
@@ -251,10 +270,22 @@ struct SessionResumer {
 
     // MARK: - Launch
 
-    private static func launchNewSession(sessionId: String, projectPath: String) {
+    private static func launchNewSession(
+        sessionId: String,
+        projectPath: String,
+        providerId: String = "claude"
+    ) {
+        // Resolve the provider via the registry so the launch command is
+        // sourced from `AgentProvider.{resume,bareLaunch}Command`. Unknown
+        // providerId falls back to claude — there is always a claude
+        // provider registered (`bootstrap()` in AgentProviderRegistry).
+        let provider = readProvider(providerId: providerId)
+            ?? readProvider(providerId: "claude")!
         let adapter = TerminalDetector.resolvedTerminal()
-        let command = sessionId.isEmpty ? "claude" : "claude --resume \(sessionId)"
-        print("[SessionResumer] Launching new session for \(sessionId.prefix(12)) via \(adapter.kind.displayName)")
+        let command = sessionId.isEmpty
+            ? provider.bareLaunchCommand()
+            : provider.resumeCommand(sessionId: sessionId)
+        print("[SessionResumer] Launching new session for \(sessionId.prefix(12)) via \(adapter.kind.displayName) provider=\(provider.id)")
         do {
             try adapter.launch(command: command, cwd: projectPath)
         } catch {
@@ -274,6 +305,53 @@ struct SessionResumer {
         } catch {
             print("[SessionResumer] fallback Terminal.app also failed: \(error)")
         }
+    }
+
+    // MARK: - Provider registry
+
+    /// Look up a provider by id, hopping to main if necessary because
+    /// `AgentProviderRegistry` is `@MainActor`. Most callers run on the
+    /// background `userInitiated` queue (resume/focusOrLaunch/launchNew),
+    /// so the sync hop is the common path.
+    private static func readProvider(providerId: String) -> (any AgentProvider)? {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                AgentProviderRegistry.shared.provider(for: providerId)
+            }
+        }
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                AgentProviderRegistry.shared.provider(for: providerId)
+            }
+        }
+    }
+
+    /// Union of every enabled provider's `processBinaryNames`, deduped in
+    /// registry order. Mirrors the helper in `TerminalDetector`/`ProcessDetector`
+    /// so all three services agree on which `comm` values count as "an agent
+    /// is alive". Today the set is just `["claude"]`.
+    private static func enabledAgentBinaries() -> [String] {
+        let providers: [any AgentProvider]
+        if Thread.isMainThread {
+            providers = MainActor.assumeIsolated {
+                AgentProviderRegistry.shared.enabled()
+            }
+        } else {
+            providers = DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    AgentProviderRegistry.shared.enabled()
+                }
+            }
+        }
+        var binaries: [String] = []
+        var seen: Set<String> = []
+        for provider in providers {
+            for binary in provider.processBinaryNames where !seen.contains(binary) {
+                binaries.append(binary)
+                seen.insert(binary)
+            }
+        }
+        return binaries
     }
 
     // MARK: - Adapter lookup

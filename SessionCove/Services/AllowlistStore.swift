@@ -28,6 +28,11 @@ struct AllowlistRule: Identifiable, Equatable, Hashable {
     var enabled: Bool
     var matcher: AllowlistMatcher
     var createdAt: Date
+    /// Owning agent provider, e.g. "claude" / "qoder" / "cursor". Defaults to
+    /// "claude" so v1 on-disk rules (no providerId field) decode unchanged;
+    /// `loadFromDisk` re-stamps the field so the file converges to v2 once
+    /// the user lands on a build that knows about it.
+    var providerId: String
 
     init(
         id: UUID = UUID(),
@@ -37,7 +42,8 @@ struct AllowlistRule: Identifiable, Equatable, Hashable {
         sessionId: String? = nil,
         enabled: Bool = true,
         matcher: AllowlistMatcher,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        providerId: String = "claude"
     ) {
         self.id = id
         self.toolName = toolName
@@ -47,6 +53,7 @@ struct AllowlistRule: Identifiable, Equatable, Hashable {
         self.enabled = enabled
         self.matcher = matcher
         self.createdAt = createdAt
+        self.providerId = providerId
     }
 
     /// Decode a single rule object as stored in `allowlist.json`.
@@ -80,6 +87,16 @@ struct AllowlistRule: Identifiable, Equatable, Hashable {
             id = UUID()
         }
 
+        // v1 rules omit providerId; default to "claude" — the only provider
+        // any prior build wrote rules for. `loadFromDisk` re-saves the file
+        // so the field is materialized on the next read.
+        let providerId: String
+        if let raw = json["providerId"] as? String, !raw.isEmpty {
+            providerId = raw
+        } else {
+            providerId = "claude"
+        }
+
         return AllowlistRule(
             id: id,
             toolName: toolName,
@@ -88,7 +105,8 @@ struct AllowlistRule: Identifiable, Equatable, Hashable {
             sessionId: sessionId,
             enabled: enabled,
             matcher: AllowlistMatcher(kind: kind, value: value),
-            createdAt: createdAt
+            createdAt: createdAt,
+            providerId: providerId
         )
     }
 
@@ -105,7 +123,8 @@ struct AllowlistRule: Identifiable, Equatable, Hashable {
                 "kind": matcher.kind,
                 "value": matcher.value
             ],
-            "createdAt": createdAt.timeIntervalSince1970
+            "createdAt": createdAt.timeIntervalSince1970,
+            "providerId": providerId
         ]
         if let sessionId, !sessionId.isEmpty {
             dict["sessionId"] = sessionId
@@ -245,7 +264,16 @@ final class AllowlistStore: ObservableObject {
             // user data. File monitor will pick up later valid writes.
             return
         }
+        // v1→v2 auto-migration: if any rule on disk lacks `providerId`, decode
+        // with the "claude" default (handled in `from(json:)`) and immediately
+        // re-save so the field is materialized. Idempotent — once every rule
+        // has the field, this branch never fires again. We don't bump a
+        // numeric schemaVersion; the field's presence is the marker.
+        let needsMigration = rawRules.contains { ($0["providerId"] as? String).map { $0.isEmpty } ?? true }
         rules = rawRules.compactMap(AllowlistRule.from(json:))
+        if needsMigration && !rules.isEmpty {
+            saveToDisk()
+        }
     }
 
     private func saveToDisk() {

@@ -1,19 +1,32 @@
 import Foundation
 
 final class SessionWatcher: Sendable {
-    private let projectsPath: String
+    private let roots: [String]
     private let onChange: @Sendable () -> Void
     private let stream: UnsafeSendableWrapper<FSEventStreamRef?>
 
-    init(onChange: @escaping @Sendable () -> Void) {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        self.projectsPath = "\(home)/.claude/projects"
+    /// Backward-compatible initializer used before multi-provider support.
+    /// Watches the Claude transcript root only, mirroring legacy behavior.
+    convenience init(onChange: @escaping @Sendable () -> Void) {
+        let claudeRoot = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+        self.init(roots: [claudeRoot], onChange: onChange)
+    }
+
+    /// Multi-root initializer. One FSEventStream watches the union of
+    /// `roots`; any change in any root coalesces into a single `onChange`
+    /// callback. Non-existent roots are tolerated by FSEvents (it watches
+    /// them lazily once they appear).
+    init(roots: [URL], onChange: @escaping @Sendable () -> Void) {
+        self.roots = roots.map(\.path)
         self.onChange = onChange
         self.stream = UnsafeSendableWrapper(nil)
     }
 
     func start() {
-        let pathsToWatch = [projectsPath] as CFArray
+        guard !roots.isEmpty else { return }
+        let pathsToWatch = roots as CFArray
 
         var context = FSEventStreamContext()
 

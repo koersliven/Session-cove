@@ -25,7 +25,7 @@ if [[ "$MACOS_VERSION" -lt 14 ]]; then
 fi
 
 if ! command -v swift &>/dev/null; then
-    echo "❌ Swift not found. Install Xcode or Xcode Command Line Tools:"
+    echo "❌ Swift not found. Install Xcode Command Line Tools:"
     echo "   xcode-select --install"
     exit 1
 fi
@@ -33,6 +33,19 @@ fi
 if ! command -v git &>/dev/null; then
     echo "❌ git not found. Install Xcode Command Line Tools:"
     echo "   xcode-select --install"
+    exit 1
+fi
+
+SDK_VER=$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || true)
+SDK_MAJOR=$(echo "$SDK_VER" | cut -d. -f1)
+if [[ -z "$SDK_VER" || -z "$SDK_MAJOR" || "$SDK_MAJOR" -lt 14 ]]; then
+    echo "❌ macOS SDK 14+ required (found: ${SDK_VER:-none})."
+    echo ""
+    echo "   Your Command Line Tools are too old. Reinstall:"
+    echo "     sudo rm -rf /Library/Developer/CommandLineTools"
+    echo "     sudo xcode-select --install"
+    echo ""
+    echo "   (Full Xcode is NOT required — fresh CLT is enough.)"
     exit 1
 fi
 
@@ -56,7 +69,10 @@ cd "$BUILD_ROOT"
 # --- Build ---
 
 echo "🔨 Building release (this may take a minute)..."
-swift build -c release 2>&1 | grep -E "^(Build|Compil|Link|error)" || true
+BUILD_LOG="${TMPDIR:-/tmp}/session-cove-build.log"
+if ! swift build -c release 2>&1 | tee "$BUILD_LOG" | grep -E "^(Build|Compil|Link|error|warning:)" ; then
+    : # pipefail off here on purpose; rely on binary check below
+fi
 
 BUILD_DIR=".build/release"
 if [[ ! -f "$BUILD_DIR/$EXECUTABLE" ]]; then
@@ -64,7 +80,14 @@ if [[ ! -f "$BUILD_DIR/$EXECUTABLE" ]]; then
 fi
 
 if [[ ! -f "$BUILD_DIR/$EXECUTABLE" ]]; then
+    echo ""
     echo "❌ Build failed. Binary not found."
+    echo ""
+    echo "   Full build log: $BUILD_LOG"
+    echo "   Last 20 lines:"
+    echo "   ─────────────────"
+    tail -20 "$BUILD_LOG" | sed 's/^/   /'
+    echo "   ─────────────────"
     exit 1
 fi
 

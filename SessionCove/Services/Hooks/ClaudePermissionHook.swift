@@ -189,6 +189,10 @@ enum ClaudePermissionHook {
 
         for rule in rules {
             guard rule.enabled else { continue }
+            // Provider isolation: a Cursor session must never match a Claude
+            // allowlist rule (and vice versa). Both sides default to "claude"
+            // today so existing flows are unaffected.
+            guard rule.providerId == request.providerId else { continue }
             guard rule.toolName == request.toolName else { continue }
 
             if rule.scope == "session" {
@@ -304,7 +308,8 @@ enum ClaudePermissionHook {
             projectPath: request.projectPath,
             scope: "always",
             enabled: true,
-            matcher: matcher
+            matcher: matcher,
+            providerId: request.providerId
         )
 
         // AllowlistStore.add is idempotent — duplicate (toolName, matcher,
@@ -605,7 +610,7 @@ enum ClaudePermissionHook {
             except Exception:
                 return set()
 
-        def match_allowlist(payload):
+        def match_allowlist(payload, provider_id):
             if not os.path.exists(ALLOWLIST_PATH):
                 return False
             try:
@@ -622,6 +627,11 @@ enum ClaudePermissionHook {
 
             for rule in rules:
                 if not rule.get("enabled", True):
+                    continue
+                # v2 schema: rule.providerId scopes the match to one provider.
+                # Pre-migration (v1) rules omit the field — default to "claude"
+                # so they keep matching the legacy Claude path.
+                if rule.get("providerId", "claude") != provider_id:
                     continue
                 if rule.get("toolName") != tool_name:
                     continue
@@ -885,7 +895,7 @@ enum ClaudePermissionHook {
             # approval path. Question events always surface in the UI so the
             # user can answer; nothing to "pre-approve" for them.
             if not is_question_event:
-                if match_allowlist(payload):
+                if match_allowlist(payload, provider_id):
                     print_allow(provider_id)
                     return 0
                 if session_id and session_id in load_trusted_sessions():

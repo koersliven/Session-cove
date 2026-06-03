@@ -2,6 +2,10 @@ import Foundation
 
 struct ProjectIsland: Identifiable, Hashable, Sendable {
     let id: String
+    /// Stable id of the `AgentProvider` whose transcripts produced this
+    /// island. Defaults to "claude" for backward compatibility with the
+    /// pre-multi-provider scanner.
+    let providerId: String
     let path: String
     let displayName: String
     var sessions: [SessionRecord] {
@@ -21,8 +25,15 @@ struct ProjectIsland: Identifiable, Hashable, Sendable {
 
     var totalCount: Int { sessions.count }
 
-    init(id: String, path: String, displayName: String, sessions: [SessionRecord]) {
+    init(
+        id: String,
+        providerId: String = "claude",
+        path: String,
+        displayName: String,
+        sessions: [SessionRecord]
+    ) {
         self.id = id
+        self.providerId = providerId
         self.path = path
         self.displayName = displayName
         self.sessions = sessions

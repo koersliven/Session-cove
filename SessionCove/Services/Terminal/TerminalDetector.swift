@@ -99,10 +99,10 @@ enum TerminalDetector {
             return adapter
         }
 
-        // 2. Process ancestry — if claude is currently running inside a
-        //    terminal, prefer that one so resumes feel local to the user's
-        //    current session.
-        if let kind = ancestorOfRunningClaude(),
+        // 2. Process ancestry — if any enabled agent is currently running
+        //    inside a terminal, prefer that one so resumes feel local to
+        //    the user's current session.
+        if let kind = ancestorOfActiveAgent(),
            let adapter = adapter(for: kind),
            adapter.isInstalled {
             return adapter
@@ -151,17 +151,54 @@ enum TerminalDetector {
 
     // MARK: - Private — process tree walking
 
-    /// Find the first running `claude` whose ancestry resolves to a
-    /// known terminal. We scan every claude pid because a user might
-    /// have multiple Cove-managed sessions in flight; the first match
-    /// wins.
-    private static func ancestorOfRunningClaude() -> TerminalKind? {
-        for pid in listClaudePids() {
+    /// Find the first running agent (any enabled provider's binary) whose
+    /// ancestry resolves to a known terminal. We scan every matching pid
+    /// because a user might have multiple Cove-managed sessions in flight;
+    /// the first match wins.
+    ///
+    /// `binaries == nil` (the default) walks the union of enabled providers'
+    /// `processBinaryNames`. Pass an explicit list to scope the lookup to a
+    /// specific provider (e.g. when the caller already knows which agent it
+    /// cares about and wants to skip the registry hop).
+    private static func ancestorOfActiveAgent(binaries: [String]? = nil) -> TerminalKind? {
+        let resolved = binaries ?? defaultAgentBinaries()
+        guard !resolved.isEmpty else { return nil }
+        for pid in listAgentPids(binaries: resolved) {
             if let kind = ancestorTerminal(of: pid) {
                 return kind
             }
         }
         return nil
+    }
+
+    /// Backward-compat wrapper. Swift can't `typealias` a function, so this
+    /// keeps the original symbol callable for any future code path that
+    /// reaches for the Claude-only spelling. Defaults match the historical
+    /// behavior because Claude is the only enabled provider today.
+    private static func ancestorOfRunningClaude() -> TerminalKind? {
+        ancestorOfActiveAgent()
+    }
+
+    /// Union of enabled providers' `processBinaryNames`, in registry order.
+    /// Hops to main if needed since `AgentProviderRegistry` is `@MainActor`.
+    private static func defaultAgentBinaries() -> [String] {
+        let providers: [any AgentProvider]
+        if Thread.isMainThread {
+            providers = MainActor.assumeIsolated { AgentProviderRegistry.shared.enabled() }
+        } else {
+            providers = DispatchQueue.main.sync {
+                MainActor.assumeIsolated { AgentProviderRegistry.shared.enabled() }
+            }
+        }
+        var binaries: [String] = []
+        var seen: Set<String> = []
+        for provider in providers {
+            for binary in provider.processBinaryNames where !seen.contains(binary) {
+                binaries.append(binary)
+                seen.insert(binary)
+            }
+        }
+        return binaries
     }
 
     /// Match the basename of `ps -o command=` output against known
@@ -217,21 +254,29 @@ enum TerminalDetector {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// All running pids whose `comm` is exactly `claude`. Mirrors the
+    /// All running pids whose `comm` basename is in `binaries`. Mirrors the
     /// matching rule in `ProcessDetector` so detection is consistent.
-    private static func listClaudePids() -> [Int32] {
-        guard let raw = runPS(arguments: ["-axo", "pid=,comm="]) else { return [] }
+    private static func listAgentPids(binaries: [String]) -> [Int32] {
+        guard !binaries.isEmpty,
+              let raw = runPS(arguments: ["-axo", "pid=,comm="]) else { return [] }
+        let binarySet = Set(binaries)
         var pids: [Int32] = []
         for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
             guard parts.count >= 2, let pid = Int32(parts[0]) else { continue }
             let comm = parts[1..<parts.count].joined(separator: " ")
             let basename = (comm as NSString).lastPathComponent
-            if basename == "claude" {
+            if binarySet.contains(basename) {
                 pids.append(pid)
             }
         }
         return pids
+    }
+
+    /// Backward-compat wrapper around `listAgentPids` scoped to the current
+    /// enabled providers' binaries. Today that's just `claude`.
+    private static func listClaudePids() -> [Int32] {
+        listAgentPids(binaries: defaultAgentBinaries())
     }
 
     /// Run `/bin/ps` with the given arguments; return stdout on success,

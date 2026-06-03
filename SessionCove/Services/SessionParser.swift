@@ -3,7 +3,20 @@ import Foundation
 enum SessionParser {
     private static var cache: [String: (modDate: Date, record: SessionRecord)] = [:]
 
+    /// Backward-compatible entry point used before multi-provider support.
+    /// Defaults to the "claude" provider so existing tests / call sites keep
+    /// working unchanged.
     static func parse(filePath: String, projectDirEncoded: String) -> SessionRecord? {
+        parse(filePath: filePath, projectDirEncoded: projectDirEncoded, providerId: "claude")
+    }
+
+    /// Multi-provider entry point. The decode logic is currently
+    /// Claude-shaped; step 9 will introduce per-provider parsers.
+    static func parse(
+        filePath: String,
+        projectDirEncoded: String,
+        providerId: String
+    ) -> SessionRecord? {
         let url = URL(fileURLWithPath: filePath)
         let fileManager = FileManager.default
 
@@ -12,7 +25,8 @@ enum SessionParser {
             return nil
         }
 
-        if let cached = cache[filePath], cached.modDate == modDate {
+        let cacheKey = "\(providerId)|\(filePath)"
+        if let cached = cache[cacheKey], cached.modDate == modDate {
             return cached.record
         }
 
@@ -79,6 +93,7 @@ enum SessionParser {
 
         let record = SessionRecord(
             id: sessionId,
+            providerId: providerId,
             projectDirEncoded: projectDirEncoded,
             projectPath: projectPath,
             jsonlPath: filePath,
@@ -91,7 +106,7 @@ enum SessionParser {
             status: .archived
         )
 
-        cache[filePath] = (modDate, record)
+        cache[cacheKey] = (modDate, record)
         return record
     }
 

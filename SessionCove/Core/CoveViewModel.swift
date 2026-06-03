@@ -79,10 +79,20 @@ final class CoveViewModel: @unchecked Sendable {
     /// and approval-expanded-aware. Single source of truth that hosts
     /// (CoveRootView pet, CoveNotchView notch) read off the view model.
     /// 72 (approval collapsed) / 240 (approval expanded) / 360 (question) / 120 (completion).
+    ///
+    /// Edge case: when `approvalExpanded == true` (e.g. user opted into
+    /// "默认展开" in Settings) but the request lacks `toolInputJSON`
+    /// (legacy v2 hook payload, or a Mock without detail), the chevron
+    /// hides via `PermissionPingCard.hasExpandableDetail` and there's
+    /// nothing to show in the bottom panel. Without this guard the panel
+    /// would still grow to 240pt — collapsed strip + ~168pt of empty
+    /// space, which the user reads as "the popup is too big".
     var pingHeight: CGFloat {
         guard let kind = pendingHookRequest?.kind else { return 72 }
         switch kind {
-        case .approval: return approvalExpanded ? 240 : 72
+        case .approval:
+            let hasDetail = (pendingHookRequest?.toolInputJSON?.isEmpty == false)
+            return (approvalExpanded && hasDetail) ? 240 : 72
         case .question: return 360
         case .completion: return 120
         }
@@ -125,6 +135,7 @@ final class CoveViewModel: @unchecked Sendable {
         }.first
     }
 
+    @MainActor
     func initialScan() async {
         CoveSoundManager.shared.play(.oceanAmbient)
         await refresh()
@@ -134,9 +145,10 @@ final class CoveViewModel: @unchecked Sendable {
 
     @MainActor
     func refresh() async {
-        var scanned = SessionScanner.scan()
-        let activePaths = ProcessDetector.shared.detectActiveProjectPaths()
-        ProcessDetector.shared.applyStatuses(activeProjectPaths: activePaths, to: &scanned)
+        let providers = AgentProviderRegistry.shared.enabled()
+        var scanned = SessionScanner.scan(providers: providers)
+        let activeLocations = ProcessDetector.shared.detectActiveAgentLocations()
+        ProcessDetector.shared.applyStatuses(activeLocations: activeLocations, to: &scanned)
         self.islands = scanned
     }
 
@@ -385,7 +397,8 @@ final class CoveViewModel: @unchecked Sendable {
            !request.projectPath.isEmpty {
             SessionResumer.focusOrLaunch(
                 sessionId: request.sessionId ?? "",
-                projectPath: request.projectPath
+                projectPath: request.projectPath,
+                providerId: request.providerId
             )
         }
         updatePendingHookRequest(nil)
@@ -564,8 +577,10 @@ final class CoveViewModel: @unchecked Sendable {
         }
     }
 
+    @MainActor
     private func startWatching() {
-        let watcher = SessionWatcher { [weak self] in
+        let roots = AgentProviderRegistry.shared.enabled().map(\.transcriptRoot)
+        let watcher = SessionWatcher(roots: roots) { [weak self] in
             Task { @MainActor [weak self] in
                 await self?.refresh()
             }
