@@ -45,10 +45,20 @@ struct HookQuestionView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        // Title is provider-driven (provider.ui.askQuestionTitle) — so a
+        // Qoder/Cursor request doesn't read "Question from Claude". The
+        // registry helper falls back to Claude when providerId is unknown,
+        // matching the default-decode behaviour of HookPermissionRequest.
+        // SwiftUI body always renders on the main thread; assumeIsolated
+        // matches the pattern used by ProcessDetector / TerminalDetector
+        // for accessing the @MainActor registry from non-isolated contexts.
+        let provider = MainActor.assumeIsolated {
+            AgentProviderRegistry.shared.provider(for: request)
+        }
+        return HStack(spacing: 8) {
             CoveMascotView(state: .attention, scale: .approval)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Question from Claude")
+                Text(provider.ui.askQuestionTitle)
                     .font(.system(size: 13, weight: .black, design: .monospaced))
                     .foregroundStyle(.white)
                 Text(request.toolName)

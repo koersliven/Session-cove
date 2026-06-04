@@ -10,6 +10,12 @@ extension Notification.Name {
     /// Posted when the persisted pet anchor changes (drag end, manual reset, etc).
     /// Observers can refresh window placement without reading UserDefaults directly.
     static let covePetAnchorDidChange = Notification.Name("covePetAnchorDidChange")
+
+    /// Posted when `CoveSettings.enabledProviders` changes (user toggles a
+    /// framework on/off in the AI 框架 tab). Carries the new set so
+    /// `WindowManager` can diff old vs new and run the per-provider
+    /// install / uninstall side effects.
+    static let coveEnabledProvidersDidChange = Notification.Name("coveEnabledProvidersDidChange")
 }
 
 /// Centralized user-facing settings store, backed by `UserDefaults`.
@@ -67,6 +73,7 @@ final class CoveSettings: ObservableObject {
         case preferredTerminal = "covePreferredTerminal"
         case approvalExpandByDefault = "coveApprovalExpandByDefault"
         case silenceCompletionWhenTerminalFrontmost = "coveSilenceCompletionWhenTerminalFrontmost"
+        case enabledProviders = "coveEnabledProviders"
     }
 
     /// Allowed range for `contentFontSize`. Exposed for PR 2's slider.
@@ -195,6 +202,38 @@ final class CoveSettings: ObservableObject {
         }
     }
 
+    /// Set of `AgentProvider.id` values the user has enabled. The
+    /// `AgentProviderRegistry.enabled()` query, the per-provider hook
+    /// installer, and the AI 框架 settings tab all consult this property.
+    ///
+    /// Default is `["claude"]` — first launch must NOT auto-enable any
+    /// other framework so we never write to `~/.qoder/`, `~/.qoderwork/`,
+    /// or `~/.cursor/` without explicit user opt-in. The setter is
+    /// belt-and-suspenders defensive: if "claude" is removed (e.g. by a
+    /// future code path) it is silently re-inserted before persisting.
+    /// The UI also disables the Claude toggle so this branch should
+    /// never fire in practice.
+    ///
+    /// Encoded on disk as a sorted `[String]` array under
+    /// `Key.enabledProviders` so a `defaults read` is human-friendly.
+    @Published var enabledProviders: Set<String> {
+        didSet {
+            guard !bootstrap else { return }
+            if !enabledProviders.contains("claude") {
+                // Claude is mandatory. Re-insert and skip the change-event
+                // so observers see exactly one transition (the corrected
+                // set) rather than the intermediate invalid state.
+                bootstrap = true
+                enabledProviders.insert("claude")
+                bootstrap = false
+            }
+            persistEnabledProviders(enabledProviders)
+            if oldValue != enabledProviders {
+                postNotification(.coveEnabledProvidersDidChange)
+            }
+        }
+    }
+
     // MARK: - Internals
 
     private let defaults: UserDefaults
@@ -285,6 +324,21 @@ final class CoveSettings: ObservableObject {
             self.silenceCompletionWhenTerminalFrontmost = true
         }
 
+        // Enabled provider set. Default is `["claude"]` ONLY — first
+        // launch must never auto-enable Qoder / QoderWork / Cursor. The
+        // explicit `object(forKey:)` check distinguishes "user has not
+        // touched this yet" (use default) from "user disabled everything
+        // and we should respect that" (which is impossible because the
+        // setter re-inserts claude).
+        if let raw = defaults.array(forKey: Key.enabledProviders.rawValue) as? [String],
+           !raw.isEmpty {
+            var set = Set(raw)
+            set.insert("claude")  // belt-and-suspenders against corrupt prefs
+            self.enabledProviders = set
+        } else {
+            self.enabledProviders = ["claude"]
+        }
+
         bootstrap = false
     }
 
@@ -310,6 +364,14 @@ final class CoveSettings: ObservableObject {
         } else {
             defaults.removeObject(forKey: Key.preferredTerminal.rawValue)
         }
+    }
+
+    /// Persist `enabledProviders` as a sorted `[String]` so the on-disk
+    /// representation is stable across launches (otherwise Set's
+    /// hash-randomized iteration would shuffle the array on every save
+    /// and noise up `defaults read` diffs).
+    private func persistEnabledProviders(_ ids: Set<String>) {
+        defaults.set(ids.sorted(), forKey: Key.enabledProviders.rawValue)
     }
 
     /// Persist NSPoint as `[Double]` (x, y). Format intentionally matches

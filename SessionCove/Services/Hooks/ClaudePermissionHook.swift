@@ -10,7 +10,117 @@ enum ClaudePermissionHook {
     private static let scriptURL = binDirectory.appendingPathComponent("session_cove_claude_hook.py")
     private static let managedMarker = "Session Cove managed PermissionRequest hook"
 
+    /// Top-level install entry point. Always runs the shared Session Cove
+    /// bootstrap (directories + bridge script) and then fans out to the
+    /// per-provider settings-file installers for every id present in
+    /// `CoveSettings.shared.enabledProviders`.
+    ///
+    /// Per-provider work is isolated inside `installFor<Provider>()` so a
+    /// failure on one provider's settings file does not abort the others.
+    /// First-launch default is `["claude"]`, so calling this on a fresh
+    /// machine touches only `~/.claude/settings.json` (bit-for-bit
+    /// equivalent to the legacy `install()`).
+    @MainActor
     static func install() throws {
+        try ensureSessionCoveBootstrap()
+        let enabled = CoveSettings.shared.enabledProviders
+
+        if enabled.contains("claude") {
+            try? installForClaude()
+        }
+        if enabled.contains("qoder") {
+            try? installForQoder()
+        }
+        if enabled.contains("qoderwork") {
+            try? installForQoderWork()
+        }
+        if enabled.contains("cursor") {
+            try? installForCursor()
+        }
+    }
+
+    /// Install the Session Cove hook into `~/.claude/settings.json`.
+    /// Public so the AI 框架 settings tab can re-run a single provider
+    /// without iterating the whole enabled set (e.g. when the user
+    /// presses a per-row "Reinstall" affordance).
+    static func installForClaude() throws {
+        try writeClaudeStyleSettings(
+            settingsURL: claudeSettingsURL,
+            providerArg: "claude"
+        )
+    }
+
+    static func installForQoder() throws {
+        try writeClaudeStyleSettings(
+            settingsURL: qoderSettingsURL,
+            providerArg: "qoder"
+        )
+    }
+
+    static func installForQoderWork() throws {
+        try writeClaudeStyleSettings(
+            settingsURL: qoderWorkSettingsURL,
+            providerArg: "qoderwork"
+        )
+    }
+
+    /// Install the Session Cove stop hook into `~/.cursor/hooks.json`.
+    /// Cursor uses a wrapped or flat schema — we detect a top-level
+    /// `hooks` dict and merge inside it so the user's `version: 1` and
+    /// any sibling keys survive verbatim.
+    static func installForCursor() throws {
+        try writeCursorHooks(install: true)
+    }
+
+    /// Reverse the install for a single provider. Removes every Session
+    /// Cove-owned entry from that framework's settings file but leaves
+    /// pre-existing user entries (r2c hooks, audit scripts, etc.) verbatim.
+    /// Called by `WindowManager` when the user disables a provider in the
+    /// AI 框架 tab.
+    ///
+    /// Unknown providerIds are no-ops. Missing settings files are no-ops
+    /// (nothing to clean). Errors are swallowed because uninstall is
+    /// best-effort cleanup; surfacing a UserDefaults-persisted toggle to
+    /// "back off" because of disk failure would be confusing.
+    static func uninstall(providerId: String) {
+        switch providerId {
+        case "claude":
+            try? removeFromClaudeStyleSettings(settingsURL: claudeSettingsURL)
+        case "qoder":
+            try? removeFromClaudeStyleSettings(settingsURL: qoderSettingsURL)
+        case "qoderwork":
+            try? removeFromClaudeStyleSettings(settingsURL: qoderWorkSettingsURL)
+        case "cursor":
+            try? writeCursorHooks(install: false)
+        default:
+            return
+        }
+    }
+
+    /// Quick "is the Session Cove hook command present in this provider's
+    /// settings file?" check used by the AI 框架 tab to render a status
+    /// dot. Reads the file as bytes and substring-matches the marker so
+    /// it works regardless of whether the file is wrapped/flat/JSON5.
+    static func isInstalled(providerId: String) -> Bool {
+        let url: URL?
+        switch providerId {
+        case "claude":    url = claudeSettingsURL
+        case "qoder":     url = qoderSettingsURL
+        case "qoderwork": url = qoderWorkSettingsURL
+        case "cursor":    url = cursorHooksURL
+        default:          return false
+        }
+        guard let url, let data = try? Data(contentsOf: url) else {
+            return false
+        }
+        return containsSessionCoveCommandInData(data)
+    }
+
+    /// Shared bootstrap: hook scratch directories + bridge script. Idempotent.
+    /// Split out so provider toggles in the AI 框架 tab can call install
+    /// for an individual provider without re-running this every time (the
+    /// top-level `install()` still calls it once on app launch).
+    private static func ensureSessionCoveBootstrap() throws {
         let fileManager = FileManager.default
         try [supportDirectory, hookDirectory, pendingDirectory, responseDirectory, binDirectory].forEach { url in
             try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
@@ -25,7 +135,32 @@ enum ClaudePermissionHook {
         }
 
         try bridgeScript.data(using: .utf8)?.write(to: scriptURL, options: .atomic)
-        try updateClaudeSettings()
+    }
+
+    // MARK: - Per-provider settings paths
+
+    private static var claudeSettingsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("settings.json")
+    }
+
+    private static var qoderSettingsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".qoder", isDirectory: true)
+            .appendingPathComponent("settings.json")
+    }
+
+    private static var qoderWorkSettingsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".qoderwork", isDirectory: true)
+            .appendingPathComponent("settings.json")
+    }
+
+    private static var cursorHooksURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cursor", isDirectory: true)
+            .appendingPathComponent("hooks.json")
     }
 
     static func pendingRequests() -> [HookPermissionRequest] {
@@ -351,10 +486,16 @@ enum ClaudePermissionHook {
     }
 
 
-    private static func updateClaudeSettings() throws {
-        let settingsURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude", isDirectory: true)
-            .appendingPathComponent("settings.json")
+    /// Shared writer for Claude / Qoder / QoderWork — all three frameworks
+    /// share the same `settings.json` schema (PermissionRequest + PreToolUse
+    /// + Stop hook arrays under a top-level `hooks` dict) and the same
+    /// Python bridge script. The only thing that varies is the file path
+    /// and the `--provider <id>` argument that tells the bridge which
+    /// stdout dialect to emit. Atomic write via tmp-file replace.
+    private static func writeClaudeStyleSettings(
+        settingsURL: URL,
+        providerArg: String
+    ) throws {
         try FileManager.default.createDirectory(
             at: settingsURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -363,10 +504,9 @@ enum ClaudePermissionHook {
         let existingData = try? Data(contentsOf: settingsURL)
         var root: [String: Any] = existingData.flatMap(HookConfigParser.parseJSONObject(from:)) ?? [:]
         var hooks = root["hooks"] as? [String: Any] ?? [:]
-        // `--provider claude` tells the bridge script which dialect to emit
-        // on stdout. Schema v4 routes via the bridge's DIALECTS table; future
-        // providers (qoder/cursor) will register their own scriptCommand here.
-        let scriptCommand = "/usr/bin/python3 \(shellQuoted(scriptURL.path)) --provider claude"
+        // `--provider <id>` tells the bridge script which dialect to emit
+        // on stdout. Schema v4 routes via the bridge's DIALECTS table.
+        let scriptCommand = "/usr/bin/python3 \(shellQuoted(scriptURL.path)) --provider \(providerArg)"
 
         let existingEntries = hooks["PermissionRequest"] as? [[String: Any]] ?? []
         let preservedEntries = existingEntries.filter { entry in
@@ -439,7 +579,133 @@ enum ClaudePermissionHook {
         var options: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
         options.insert(.withoutEscapingSlashes)
         let data = try JSONSerialization.data(withJSONObject: root, options: options)
-        try data.write(to: settingsURL, options: .atomic)
+        try atomicWrite(data, to: settingsURL)
+    }
+
+    /// Strip every Session Cove-owned entry from a Claude-style settings
+    /// file (Claude / Qoder / QoderWork share the schema). Pre-existing
+    /// user entries in PermissionRequest / PreToolUse / Stop arrays are
+    /// preserved verbatim. Empty arrays are dropped from the output so we
+    /// don't leave hollow `"Stop": []` artifacts behind.
+    ///
+    /// No-op if the file is missing or unparseable.
+    private static func removeFromClaudeStyleSettings(settingsURL: URL) throws {
+        guard let existingData = try? Data(contentsOf: settingsURL) else { return }
+        guard var root = HookConfigParser.parseJSONObject(from: existingData) else { return }
+        guard var hooks = root["hooks"] as? [String: Any] else { return }
+
+        for event in ["PermissionRequest", "PreToolUse", "Stop"] {
+            guard let entries = hooks[event] as? [[String: Any]] else { continue }
+            let preserved = entries.filter { entry in
+                !containsSessionCoveCommand(entry)
+            }
+            if preserved.isEmpty {
+                hooks.removeValue(forKey: event)
+            } else {
+                hooks[event] = preserved
+            }
+        }
+
+        if hooks.isEmpty {
+            root.removeValue(forKey: "hooks")
+        } else {
+            root["hooks"] = hooks
+        }
+
+        var options: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
+        options.insert(.withoutEscapingSlashes)
+        let data = try JSONSerialization.data(withJSONObject: root, options: options)
+        try atomicWrite(data, to: settingsURL)
+    }
+
+    /// Write (or strip from) `~/.cursor/hooks.json`. Cursor's schema is
+    /// either flat `{"<event>": [...]}` or wrapped `{"hooks":{"<event>":[...]}, "version":1}`
+    /// depending on how the file was first generated. We detect a
+    /// top-level `hooks` dict and merge INSIDE it so wrapper-only keys
+    /// (`version`, etc.) survive.
+    ///
+    /// Whitelist guard: refuse to mutate the file if it does not parse as
+    /// a JSON object — this keeps a corrupt or YAML-shaped file from
+    /// being silently overwritten with our merged structure.
+    private static func writeCursorHooks(install: Bool) throws {
+        let settingsURL = cursorHooksURL
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let existingData = try? Data(contentsOf: settingsURL)
+
+        // Backup the original ONCE before our first mutation. Skip if the
+        // file already contains our marker — that means we wrote it on a
+        // prior install and the "real" pre-Session-Cove file is already
+        // backed up (or never existed).
+        if install, let existingData, !containsSessionCoveCommandInData(existingData) {
+            let backupURL = settingsURL.deletingLastPathComponent()
+                .appendingPathComponent("settings.session-cove-backup.json")
+            if !FileManager.default.fileExists(atPath: backupURL.path) {
+                try? existingData.write(to: backupURL, options: .atomic)
+            }
+        }
+
+        // Parse — fall back to empty wrapped shape on missing file.
+        let root: [String: Any] = existingData.flatMap(HookConfigParser.parseJSONObject(from:)) ?? [:]
+
+        // Detect wrapped vs flat: if top-level has a `hooks` dict, merge
+        // inside it. The actual file the user shipped has a wrapper plus
+        // a `"version": 1` sibling, so we MUST preserve those.
+        let isWrapped = (root["hooks"] as? [String: Any]) != nil
+
+        let scriptCommand = "/usr/bin/python3 \(shellQuoted(scriptURL.path)) --provider cursor"
+
+        var newRoot = root
+        if isWrapped {
+            let inner = (root["hooks"] as? [String: Any]) ?? [:]
+            let merged = install
+                ? CursorHooksMerger.merged(into: inner, sessionCoveCommand: scriptCommand)
+                : CursorHooksMerger.removed(from: inner)
+            if merged.isEmpty {
+                newRoot.removeValue(forKey: "hooks")
+            } else {
+                newRoot["hooks"] = merged
+            }
+        } else {
+            // Flat shape — operate on the top level directly. If the file
+            // was empty (no existing data) and we're uninstalling, write
+            // nothing back.
+            let merged = install
+                ? CursorHooksMerger.merged(into: root, sessionCoveCommand: scriptCommand)
+                : CursorHooksMerger.removed(from: root)
+            newRoot = merged
+        }
+
+        // Uninstall + originally-empty file ⇒ skip the write so we don't
+        // create an empty `{}` hooks.json the user never had.
+        if !install, existingData == nil { return }
+
+        var options: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
+        options.insert(.withoutEscapingSlashes)
+        let data = try JSONSerialization.data(withJSONObject: newRoot, options: options)
+        try atomicWrite(data, to: settingsURL)
+    }
+
+    /// Atomic write helper: write to a sibling tmp file then `replaceItemAt`
+    /// to swap. Avoids the half-written-file failure mode if the process
+    /// is killed mid-write — important for files like `~/.claude/settings.json`
+    /// that the agent itself reads on every tool call.
+    private static func atomicWrite(_ data: Data, to url: URL) throws {
+        let tmpURL = url.appendingPathExtension("sc-tmp")
+        try data.write(to: tmpURL, options: .atomic)
+        do {
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
+            } else {
+                try FileManager.default.moveItem(at: tmpURL, to: url)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw error
+        }
     }
 
     private static func containsSessionCoveCommandInData(_ data: Data) -> Bool {

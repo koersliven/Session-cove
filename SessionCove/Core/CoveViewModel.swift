@@ -326,7 +326,7 @@ final class CoveViewModel: @unchecked Sendable {
             sessionId: nil,
             toolName: "AskUserQuestion",
             projectPath: island?.path ?? "~/Work/session-cove",
-            summary: "claude needs a few details before continuing.",
+            summary: "agent needs a few details before continuing.",
             matchValue: "",
             receivedAt: Date(),
             kind: .question,

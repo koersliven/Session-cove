@@ -6,6 +6,14 @@ final class WindowManager {
     private var controller: CoveModeWindowController?
     private var viewModel: CoveViewModel?
     private var displayModeObserver: NSObjectProtocol?
+    private var enabledProvidersObserver: NSObjectProtocol?
+
+    /// Snapshot of the last enabled-provider set we acted on. Used by the
+    /// `coveEnabledProvidersDidChange` handler to compute newly-enabled vs
+    /// newly-disabled diffs without re-scanning settings files. Seeded
+    /// from `CoveSettings.shared.enabledProviders` after the initial
+    /// install fan-out completes.
+    private var lastEnabledProviders: Set<String> = []
 
     func setup() {
         let viewModel = CoveViewModel()
@@ -18,6 +26,10 @@ final class WindowManager {
         } catch {
             viewModel.hookIntegrationError = error.localizedDescription
         }
+        // Seed the diff cache AFTER the initial fan-out. Any subsequent
+        // change notification will compute (new \ old) and (old \ new)
+        // against this snapshot.
+        lastEnabledProviders = CoveSettings.shared.enabledProviders
 
         installController(for: CoveSettings.shared.displayMode, viewModel: viewModel)
 
@@ -38,6 +50,26 @@ final class WindowManager {
             }
         }
 
+        // Provider toggle observer: fan out per-provider install /
+        // uninstall when the user flips a switch in the AI 框架 tab.
+        // Idempotent — installing an already-installed provider is a
+        // safe overwrite, uninstalling a never-installed provider is a
+        // no-op.
+        // Mirror displayModeObserver's [weak self] double-capture pattern:
+        // the outer NotificationCenter closure is @Sendable and cannot
+        // forward a captured weak var into another Sendable closure.
+        enabledProvidersObserver = NotificationCenter.default.addObserver(
+            forName: .coveEnabledProvidersDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.handleEnabledProvidersChange()
+                }
+            }
+        }
+
         Task { await viewModel.initialScan() }
     }
 
@@ -46,11 +78,39 @@ final class WindowManager {
             NotificationCenter.default.removeObserver(observer)
             displayModeObserver = nil
         }
+        if let observer = enabledProvidersObserver {
+            NotificationCenter.default.removeObserver(observer)
+            enabledProvidersObserver = nil
+        }
         viewModel?.stopHookPolling()
         controller?.handleDisplayModeWillChange()
         controller?.close()
         controller = nil
         viewModel = nil
+    }
+
+    /// Diff the cached enabled set against the current `CoveSettings`
+    /// state and route each delta to the right per-provider hook
+    /// installer. Invoked by the `.coveEnabledProvidersDidChange`
+    /// notification.
+    private func handleEnabledProvidersChange() {
+        let current = CoveSettings.shared.enabledProviders
+        let added = current.subtracting(lastEnabledProviders)
+        let removed = lastEnabledProviders.subtracting(current)
+        lastEnabledProviders = current
+
+        for providerId in added {
+            switch providerId {
+            case "claude":    try? ClaudePermissionHook.installForClaude()
+            case "qoder":     try? ClaudePermissionHook.installForQoder()
+            case "qoderwork": try? ClaudePermissionHook.installForQoderWork()
+            case "cursor":    try? ClaudePermissionHook.installForCursor()
+            default:          break  // unknown provider id — ignore
+            }
+        }
+        for providerId in removed {
+            ClaudePermissionHook.uninstall(providerId: providerId)
+        }
     }
 
     private func installController(for mode: CoveSettings.DisplayMode, viewModel: CoveViewModel) {

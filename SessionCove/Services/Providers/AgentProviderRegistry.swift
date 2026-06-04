@@ -2,20 +2,16 @@ import Foundation
 
 /// Singleton registry of installed `AgentProvider`s.
 ///
-/// Step 1 ships only `ClaudeProvider`; the registry's `enabled()` set is
-/// hard-coded to `["claude"]`. A later step will replace that with a
-/// user-controlled `CoveSettings.enabledProviders` list. Existing services
-/// continue to use their hard-coded paths until they are migrated to look up
-/// a provider here, so introducing the registry is a no-op at runtime.
+/// As of step 10, `enabled()` reads from
+/// `CoveSettings.shared.enabledProviders` — that property is the single
+/// source of truth for which providers are active. Unknown ids in the
+/// setting are silently ignored (filtered through `compactMap`) so a
+/// renamed-or-removed provider does not crash subsequent launches.
 @MainActor
 final class AgentProviderRegistry {
     static let shared = AgentProviderRegistry()
 
     private(set) var providers: [String: any AgentProvider] = [:]
-
-    /// Provider ids considered "enabled" for now. Step 10 replaces this
-    /// hard-coded set with a user-facing setting.
-    private let enabledIds: Set<String> = ["claude"]
 
     private init() {
         bootstrap()
@@ -32,12 +28,28 @@ final class AgentProviderRegistry {
         providers[id]
     }
 
+    /// Provider associated with a given hook request, with a Claude fallback.
+    ///
+    /// Views (HookQuestionView, CompletionPingCard, …) call this instead of
+    /// reaching into the dictionary directly so that:
+    ///   * an unknown / stale `providerId` (e.g. a provider that was removed
+    ///     while a pending file still mentions it) never produces a nil and
+    ///     forces views to handle the optional;
+    ///   * the default surface remains Claude — which is also the legacy
+    ///     decode default for `HookPermissionRequest.providerId`.
+    func provider(for request: HookPermissionRequest) -> any AgentProvider {
+        providers[request.providerId] ?? ClaudeProvider()
+    }
+
     /// Returns the subset of registered providers that are currently
-    /// enabled. Order is stable: providers are sorted by `id` so callers
-    /// can rely on a deterministic ordering for UI lists.
+    /// enabled per `CoveSettings.enabledProviders`. Unknown ids in the
+    /// setting are dropped. Order is stable: providers are sorted by
+    /// `id` so callers can rely on a deterministic ordering for UI
+    /// lists.
     func enabled() -> [any AgentProvider] {
-        providers.values
-            .filter { enabledIds.contains($0.id) }
+        let enabledIds = CoveSettings.shared.enabledProviders
+        return enabledIds
+            .compactMap { providers[$0] }
             .sorted { $0.id < $1.id }
     }
 

@@ -10,13 +10,24 @@ enum SessionParser {
         parse(filePath: filePath, projectDirEncoded: projectDirEncoded, providerId: "claude")
     }
 
-    /// Multi-provider entry point. The decode logic is currently
-    /// Claude-shaped; step 9 will introduce per-provider parsers.
+    /// Multi-provider entry point. Dispatches by `providerId`:
+    ///
+    ///   * `"cursor"` → `CursorTranscriptParser.parse(...)` (role/content
+    ///     parts shape, no permission-mode header, no ai-title).
+    ///   * everything else → the Claude-shaped decoder below (used for
+    ///     Claude / Qoder / QoderWork — they all use the same JSONL
+    ///     schema with `permission-mode` + `user` + `ai-title` lines).
     static func parse(
         filePath: String,
         projectDirEncoded: String,
         providerId: String
     ) -> SessionRecord? {
+        if providerId == "cursor" {
+            return CursorTranscriptParser.parse(
+                filePath: filePath,
+                projectDirEncoded: projectDirEncoded
+            )
+        }
         let url = URL(fileURLWithPath: filePath)
         let fileManager = FileManager.default
 

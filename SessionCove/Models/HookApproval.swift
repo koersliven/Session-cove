@@ -184,7 +184,7 @@ struct HookPermissionRequest: Identifiable, Equatable, Sendable, Codable {
             sessionId: nil,
             toolName: "Bash",
             projectPath: island?.path ?? "~/Work/session-cove",
-            summary: "claude wants to run a model/tool request in this project island.",
+            summary: "agent wants to run a model/tool request in this project island.",
             matchValue: "git status",
             receivedAt: Date(),
             providerId: "claude"

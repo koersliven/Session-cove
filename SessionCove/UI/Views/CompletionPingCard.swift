@@ -39,12 +39,20 @@ struct CompletionPingCard: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        // Pull title from provider.ui — today every provider's
+        // completionTitle is "任务完成", but the indirection lets us localize
+        // per provider later (e.g. "Cursor 完成回合") without touching the view.
+        // SwiftUI body renders on main; assumeIsolated mirrors the existing
+        // ProcessDetector pattern for hopping into the @MainActor registry.
+        let provider = MainActor.assumeIsolated {
+            AgentProviderRegistry.shared.provider(for: request)
+        }
+        return HStack(spacing: 10) {
             CoveMascotView(state: .idle, scale: .row)
                 .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("任务完成")
+                Text(provider.ui.completionTitle)
                     .font(.system(size: 12, weight: .black, design: .monospaced))
                     .foregroundStyle(.white)
 

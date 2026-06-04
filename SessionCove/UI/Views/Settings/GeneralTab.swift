@@ -46,7 +46,7 @@ struct GeneralTab: View {
                 Toggle(isOn: $settings.silenceCompletionWhenTerminalFrontmost) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("终端在前台时静默完成提示")
-                        Text("当 iTerm / Terminal / Ghostty 等终端正在使用时,Claude 完成回合不再弹窗。关闭后任何场景都弹。")
+                        Text("当 iTerm / Terminal / Ghostty 等终端正在使用时,回合完成时不再弹窗。关闭后任何场景都弹。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

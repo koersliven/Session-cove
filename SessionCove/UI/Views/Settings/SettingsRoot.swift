@@ -6,6 +6,9 @@ struct SettingsRoot: View {
             GeneralTab()
                 .tabItem { Label("通用", systemImage: "gearshape") }
 
+            AIFrameworksTab()
+                .tabItem { Label("AI 框架", systemImage: "puzzlepiece") }
+
             DisplayTab()
                 .tabItem { Label("显示", systemImage: "display") }
 

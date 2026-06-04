@@ -115,4 +115,41 @@ enum CursorHooksMerger {
 
         return result
     }
+
+    /// Inverse of `merged`: strip every Session Cove-owned entry from
+    /// `existing` while preserving everything else. Used by step 10's
+    /// uninstall path when the user toggles Cursor off in the AI 框架
+    /// settings tab. Idempotent — running it twice is harmless.
+    ///
+    /// Behavior matches `merged` symmetrically:
+    ///   * Keys NOT in `subscribedEvents` are passed through untouched.
+    ///   * For each subscribed event, entries whose `command` contains
+    ///     `ownershipMarker` are dropped; everything else preserved.
+    ///   * If an event's array becomes empty after stripping, the key
+    ///     is REMOVED entirely so the on-disk file does not accumulate
+    ///     empty `"stop": []` arrays. (This matches "leave no trace"
+    ///     after uninstall.)
+    static func removed(
+        from existing: [String: Any]
+    ) -> [String: Any] {
+        var result = existing
+
+        for event in subscribedEvents {
+            guard let userEntries = existing[event] as? [Any] else { continue }
+            let preserved: [Any] = userEntries.filter { entry in
+                guard let dict = entry as? [String: Any],
+                      let cmd = dict["command"] as? String else {
+                    return true
+                }
+                return !cmd.contains(ownershipMarker)
+            }
+            if preserved.isEmpty {
+                result.removeValue(forKey: event)
+            } else {
+                result[event] = preserved
+            }
+        }
+
+        return result
+    }
 }

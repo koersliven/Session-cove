@@ -127,7 +127,7 @@ struct CoveMapView: View {
                 Text("NO ISLANDS")
                     .font(.system(size: 13, weight: .black, design: .monospaced))
                     .foregroundStyle(.white)
-                Text("start Claude Code in a project")
+                Text("start an agent session in a project")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(PixelPalette.foam.opacity(0.84))
             }

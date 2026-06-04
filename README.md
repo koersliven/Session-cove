@@ -12,7 +12,7 @@
   <a href="#features">Features</a> &bull;
   <a href="#how-it-works">How It Works</a> &bull;
   <a href="#installation">Installation</a> &bull;
-  <a href="#supported-tools">Supported Tools</a> &bull;
+  <a href="#supported-frameworks">Supported Frameworks</a> &bull;
   <a href="#build-from-source">Build</a>
 </p>
 
@@ -77,13 +77,28 @@ When you use Claude Code across many projects, sessions scatter across directori
 └──────────────────┘        └─────────────────────────┘
 ```
 
-Session Cove reads session metadata from `~/.claude/projects/` (headers only — never full transcripts). It registers a `PermissionRequest` hook in Claude Code's settings to intercept approval prompts via a lightweight Python bridge script.
+Session Cove reads session metadata from `~/.claude/projects/` (headers only — never full transcripts). It registers a `PermissionRequest` / `PreToolUse` / `Stop` hook in Claude Code's settings to intercept approval prompts, route `AskUserQuestion` answers, and surface turn-completion toasts — all through a single lightweight Python bridge script.
 
-## Supported Tools
+### Multiple AI agent frameworks
 
-| AI Client | Status | Notes |
-|-----------|--------|-------|
-| Claude Code | Supported | Full integration: sessions, permissions, resume |
+Session Cove now ships with an `AgentProvider` abstraction that lets it manage sessions and hooks for several Claude-compatible coding agents — not just Claude Code. The bridge script accepts a `--provider <id>` argument and emits the right hook-output dialect for each framework.
+
+By default **only Claude Code is enabled** on first launch. Open **Settings → AI 框架** to toggle Qoder / QoderWork / Cursor — each toggle writes (or removes) that framework's settings file under `~/.qoder/`, `~/.qoderwork/`, or `~/.cursor/`. Disabled frameworks never see Session Cove touch their config.
+
+<a id="supported-frameworks"></a>
+
+## Supported Frameworks
+
+| Framework | Status | Settings file | Coverage |
+|-----------|--------|---------------|----------|
+| Claude Code | Full | `~/.claude/settings.json` | `PermissionRequest` + `AskUserQuestion` + `Stop` + terminal focus |
+| Qoder | Full | `~/.qoder/settings.json` | Claude-shaped hooks, alias dialect (PermissionRequest + AskUserQuestion + Stop) |
+| QoderWork | Full | `~/.qoderwork/settings.json` | Claude-shaped hooks, alias dialect (PermissionRequest + AskUserQuestion + Stop) |
+| Cursor | Experimental | `~/.cursor/hooks.json` | `Stop`-only — Cursor has no `PermissionRequest` equivalent today |
+
+Toggle any of these in **Settings → AI 框架**. The status dot next to each framework reflects whether its settings file currently contains the Session Cove hook command.
+
+### Supported Terminals
 
 | Terminal | Focus existing | Launch new | Notes |
 |---------|----------------|------------|-------|
@@ -172,11 +187,13 @@ You can manage this later in **System Settings → Privacy & Security → Automa
 ### 3. Hook Installation (automatic)
 
 On first launch, Session Cove automatically:
-- Creates `~/.session-cove/hooks/` for the permission bridge
-- Adds a `PermissionRequest` hook entry to `~/.claude/settings.json`
+- Creates `~/.session-cove/hooks/` for the permission bridge (shared by every enabled framework)
+- Adds `PermissionRequest`, `PreToolUse` (AskUserQuestion), and `Stop` hook entries to `~/.claude/settings.json`
 - A backup of your original settings is saved as `settings.session-cove-backup.json`
 
 No manual action needed — just restart any running Claude Code session to pick up the hook.
+
+To enable Qoder / QoderWork / Cursor, toggle them in **Settings → AI 框架**. Session Cove will install (or uninstall) the equivalent hook entries in that framework's settings file on toggle, with the same backup-once safety net.
 
 ## Acknowledgments
 
