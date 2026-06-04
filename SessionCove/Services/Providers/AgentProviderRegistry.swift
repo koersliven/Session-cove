@@ -43,7 +43,16 @@ final class AgentProviderRegistry {
 
     /// Registers the built-in providers. Called once from `init` and safe to
     /// call again (registration is idempotent).
+    ///
+    /// Note: `QoderProvider`, `QoderWorkProvider`, and `CursorProvider` are
+    /// registered here so that future UI (step 10) can list them as available
+    /// choices, but they are intentionally absent from `enabledIds` above. As
+    /// long as `enabled()` excludes them, scanners / watchers / hook
+    /// installers never touch `~/.qoder/`, `~/.qoderwork/`, or `~/.cursor/`.
     private func bootstrap() {
         register(ClaudeProvider())
+        register(QoderProvider())
+        register(QoderWorkProvider())
+        register(CursorProvider())
     }
 }
