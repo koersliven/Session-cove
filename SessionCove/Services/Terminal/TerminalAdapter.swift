@@ -94,6 +94,26 @@ protocol TerminalAdapter {
     func launch(command: String, cwd: String) throws
 }
 
+// MARK: - TerminalAdapter writeText default
+
+extension TerminalAdapter {
+    /// Write text to the terminal session identified by `tty` as if typed by the
+    /// user. Default implementation uses POSIX tty write (universal across all
+    /// terminals). Terminal-specific adapters can override for better reliability.
+    /// Returns `true` on success.
+    func writeText(tty: String, text: String) -> Bool {
+        let fullPath = TerminalAdapterHelpers.fullTTY(tty)
+        guard let data = (text + "\n").data(using: .utf8) else { return false }
+        guard let handle = FileHandle(forWritingAtPath: fullPath) else {
+            print("[TerminalAdapter] writeText: cannot open \(fullPath) for writing")
+            return false
+        }
+        defer { handle.closeFile() }
+        handle.write(data)
+        return true
+    }
+}
+
 // MARK: - TerminalAdapterHelpers
 
 /// Shared utilities used by every adapter. Standalone (no SessionResumer

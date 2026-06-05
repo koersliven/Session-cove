@@ -246,8 +246,13 @@ enum ClaudePermissionHook {
             // UI-side allowlist guard: even if the python hook missed the match
             // (stale pending file from old script, race, etc.) — silently auto-allow
             // matching requests so the UI never shows a popup the user already pre-approved.
-            // Skip this branch for completion — Stop events are not allowlist-eligible.
-            if kind != .completion {
+            // Skip this branch for completion AND question kinds:
+            //   - completion (Stop): not allowlist-eligible.
+            //   - question (AskUserQuestion): must always surface the form so the
+            //     user can provide answers. "Always allow" is a permission concept,
+            //     not a question-bypassing concept — auto-resolving a question
+            //     would eat the pending and Claude never gets an answer.
+            if kind == .approval {
                 if matchesAllowlist(request: request) {
                     autoResolveAllowed(request: request)
                     continue
@@ -401,8 +406,24 @@ enum ClaudePermissionHook {
         // can emit it back as PreToolUse hookSpecificOutput.updatedInput.
         // Other decisions don't carry payload — bridgeScript's output_decision
         // only inspects "answers" when decision == "answer".
+        //
+        // Terminal injection path (v4+): when `useTerminalInjection` is true,
+        // the Python bridge stays SILENT on stdout for question events — Claude
+        // falls back to its built-in terminal prompt and TerminalTextInjector
+        // types the answer. The bridge still reads the response file to exit
+        // its poll loop cleanly.
+        //
+        // ONLY single-question forms qualify: multi-question AskUserQuestion
+        // does NOT fallback to a terminal prompt (Claude waits for the hook
+        // to return updatedInput inline). Without this guard, multi-question
+        // submissions would cause Python to stay silent → Claude hangs.
         if case .answer(let answers) = decision {
             response["answers"] = answers
+            let isSingleQuestion = (request.questions.count == 1)
+            let isClaude = (request.providerId == "claude")
+            if isSingleQuestion && isClaude {
+                response["useTerminalInjection"] = true
+            }
         }
         let data = try JSONSerialization.data(withJSONObject: response, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: responseDirectory.appendingPathComponent("\(request.id).json"), options: .atomic)
@@ -823,6 +844,16 @@ enum ClaudePermissionHook {
             # question flow rather than us injecting a guessed answer.
             if not isinstance(decision, dict) or decision.get("decision") != "answer":
                 return
+            # Terminal injection path (v4+): when the Swift side sets
+            # `useTerminalInjection: true`, the answer is being delivered
+            # by writing directly to the session's tty. Stay SILENT on stdout
+            # so Claude renders its built-in terminal prompt (where the typed
+            # text will land). The Python bridge's only job is to exit the
+            # poll loop cleanly — which we do by returning without printing.
+            if decision.get("useTerminalInjection"):
+                debug_log("question: useTerminalInjection=true, staying silent")
+                return
+            # Fallback path: terminal injection failed or not requested.
             # AskUserQuestion / AskFollowupQuestion completion. Claude's
             # PreToolUse hookSpecificOutput.updatedInput **replaces the
             # entire tool_input** before dispatch — earlier we wrote just
@@ -857,6 +888,11 @@ enum ClaudePermissionHook {
             # Match Claude's silent-on-non-answer behavior: stay quiet
             # so Cursor's built-in fallback runs.
             if not isinstance(decision, dict) or decision.get("decision") != "answer":
+                return
+            # Terminal injection path: same as Claude — stay silent when
+            # the answer is being typed directly into the terminal.
+            if decision.get("useTerminalInjection"):
+                debug_log("cursor question: useTerminalInjection=true, staying silent")
                 return
             # If Cursor ever surfaces an AskUserQuestion-style hook, the
             # answers shape will need to be confirmed against the
@@ -1279,6 +1315,19 @@ enum ClaudePermissionHook {
             # Allowlist + trusted-session shortcuts only apply to the legacy
             # approval path. Question events always surface in the UI so the
             # user can answer; nothing to "pre-approve" for them.
+            # Claude fires BOTH PreToolUse and PermissionRequest for question
+            # tools (AskUserQuestion / AskFollowupQuestion). The PreToolUse
+            # path writes a pending file and exits silently (fire-and-forget)
+            # so Claude falls back to its terminal prompt. The PermissionRequest
+            # path MUST emit allow — otherwise Claude blocks waiting for a
+            # permission decision and the terminal prompt never renders.
+            # Emitting allow here just means "yes you may ask the user a
+            # question" — it does NOT bypass the actual Q&A flow.
+            if is_question_tool and event_name == "PermissionRequest":
+                debug_log("PermissionRequest for question tool — emit allow (unblock prompt rendering)")
+                print_allow(provider_id)
+                return 0
+
             if not is_question_event:
                 if match_allowlist(payload, provider_id):
                     print_allow(provider_id)
@@ -1329,6 +1378,20 @@ enum ClaudePermissionHook {
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(request, f, ensure_ascii=False, indent=2, sort_keys=True)
             os.replace(tmp, request_path)
+
+            # Question events (AskUserQuestion/AskFollowupQuestion): exit
+            # immediately after writing the pending file. This is CRITICAL
+            # — if we block here (poll loop), Claude waits for our hook to
+            # finish before rendering its terminal prompt. By exiting 0
+            # with no stdout, Claude falls back to its built-in interactive
+            # terminal prompt (the numbered option list the user sees in
+            # iTerm). Meanwhile SC's Swift poll picks up the pending file,
+            # renders the question form UI, and on submit injects the
+            # answer via TerminalTextInjector into the already-waiting
+            # terminal prompt. Fire-and-forget, just like Stop events.
+            if is_question_event:
+                debug_log("question: fire-and-forget (exit 0, let Claude render terminal prompt)")
+                return 0
 
             deadline = time.time() + TIMEOUT_SECONDS
             last_touch = time.time()

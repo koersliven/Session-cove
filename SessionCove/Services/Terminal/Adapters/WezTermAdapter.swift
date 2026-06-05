@@ -76,6 +76,69 @@ struct WezTermAdapter: TerminalAdapter {
         return true
     }
 
+    /// Write text to a WezTerm pane matching `tty` via `wezterm cli send-text`.
+    /// Does NOT bring WezTerm to front. Falls back to POSIX tty write on failure.
+    func writeText(tty: String, text: String) -> Bool {
+        let fullTTY = TerminalAdapterHelpers.fullTTY(tty)
+
+        // Find the pane id matching our tty
+        let listResult: TerminalAdapterHelpers.ProcessOutput
+        do {
+            listResult = try TerminalAdapterHelpers.runProcess(
+                binaryPath,
+                arguments: ["cli", "list", "--format", "json"],
+                kind: kind
+            )
+        } catch {
+            // Fall back to POSIX write
+            guard let data = (text + "\n").data(using: .utf8),
+                  let handle = FileHandle(forWritingAtPath: fullTTY) else { return false }
+            defer { handle.closeFile() }
+            handle.write(data)
+            return true
+        }
+
+        guard listResult.didSucceed,
+              let data = listResult.stdout.data(using: .utf8),
+              let panes = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+            guard let data = (text + "\n").data(using: .utf8),
+                  let handle = FileHandle(forWritingAtPath: fullTTY) else { return false }
+            defer { handle.closeFile() }
+            handle.write(data)
+            return true
+        }
+
+        guard let paneID = panes.compactMap({ pane -> Int? in
+            if let name = pane["tty_name"] as? String, name == fullTTY,
+               let id = pane["pane_id"] as? Int {
+                return id
+            }
+            return nil
+        }).first else {
+            guard let data = (text + "\n").data(using: .utf8),
+                  let handle = FileHandle(forWritingAtPath: fullTTY) else { return false }
+            defer { handle.closeFile() }
+            handle.write(data)
+            return true
+        }
+
+        // Send text via wezterm cli (stdin to send-text becomes the injected text)
+        let textWithNewline = text + "\n"
+        let sendResult = try? TerminalAdapterHelpers.runProcess(
+            binaryPath,
+            arguments: ["cli", "send-text", "--pane-id", String(paneID), "--no-paste", textWithNewline],
+            kind: kind
+        )
+        if sendResult?.didSucceed == true { return true }
+
+        // Fallback to POSIX
+        guard let posixData = (text + "\n").data(using: .utf8),
+              let handle = FileHandle(forWritingAtPath: fullTTY) else { return false }
+        defer { handle.closeFile() }
+        handle.write(posixData)
+        return true
+    }
+
     func launch(command: String, cwd: String) throws {
         // Prefer the mux-aware `cli spawn` so the new window joins any
         // existing wezterm GUI; fall back to `start` when no GUI is up

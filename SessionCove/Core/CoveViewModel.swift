@@ -484,6 +484,33 @@ final class CoveViewModel: @unchecked Sendable {
         lastHookDecision = decision
         CoveSoundManager.shared.play(.bubblePop)
         guard let request = pendingHookRequest else { return }
+
+        // For question answers: schedule terminal text injection BEFORE
+        // resolving the hook (which lets the Python bridge exit, unblocking
+        // Claude to render its terminal prompt). The injection fires after a
+        // Terminal text injection only for Claude Code (CLI in a terminal)
+        // AND only for SINGLE-question forms. Multi-question AskUserQuestion
+        // does NOT fallback to a terminal prompt — Claude waits for the hook
+        // to return updatedInput inline. Single-question (especially the
+        // common AskFollowupQuestion pattern) does render a terminal prompt
+        // when the hook stays silent, so injection works there.
+        // Qoder/Cursor are IDE-hosted — injection never applies to them.
+        if request.kind == .question,
+           request.providerId == "claude",
+           request.questions.count == 1,
+           case .answer(let answers) = decision {
+            TerminalTextInjector.injectAnswer(
+                sessionId: request.sessionId,
+                projectPath: request.projectPath,
+                questions: request.questions,
+                answers: answers
+            ) { success in
+                if !success {
+                    print("[CoveViewModel] terminal injection failed — Python bridge fallback will handle via updatedInput")
+                }
+            }
+        }
+
         do {
             try ClaudePermissionHook.resolve(request: request, decision: decision)
         } catch {

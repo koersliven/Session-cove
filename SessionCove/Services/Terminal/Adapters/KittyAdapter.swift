@@ -81,6 +81,57 @@ struct KittyAdapter: TerminalAdapter {
         return true
     }
 
+    /// Write text to a kitty window matching `tty` via `kitty @ send-text`.
+    /// Does NOT bring kitty to front. Falls back to POSIX tty write on failure.
+    func writeText(tty: String, text: String) -> Bool {
+        let fullTTY = TerminalAdapterHelpers.fullTTY(tty)
+
+        // First find the matching window id via `kitty @ ls`
+        guard let windowID = findWindowIDForTTY(fullTTY) else {
+            // kitty remote control unavailable — fall back to POSIX
+            guard let data = (text + "\n").data(using: .utf8),
+                  let handle = FileHandle(forWritingAtPath: fullTTY) else { return false }
+            defer { handle.closeFile() }
+            handle.write(data)
+            return true
+        }
+
+        // Send text via kitty remote control (includes trailing newline)
+        let textWithNewline = text + "\n"
+        let result = try? TerminalAdapterHelpers.runProcess(
+            binaryPath,
+            arguments: ["@", "--to", Self.socketPath, "send-text", "--match", "id:\(windowID)", textWithNewline],
+            kind: kind
+        )
+        if result?.didSucceed == true { return true }
+
+        // Fallback to POSIX
+        guard let data = (text + "\n").data(using: .utf8),
+              let handle = FileHandle(forWritingAtPath: fullTTY) else { return false }
+        defer { handle.closeFile() }
+        handle.write(data)
+        return true
+    }
+
+    /// Look up a kitty window id matching `fullTTY` from `kitty @ ls`.
+    private func findWindowIDForTTY(_ fullTTY: String) -> Int? {
+        let listResult: TerminalAdapterHelpers.ProcessOutput
+        do {
+            listResult = try TerminalAdapterHelpers.runProcess(
+                binaryPath,
+                arguments: ["@", "--to", Self.socketPath, "ls"],
+                kind: kind
+            )
+        } catch { return nil }
+
+        guard listResult.didSucceed,
+              let data = listResult.stdout.data(using: .utf8),
+              let tabs = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else {
+            return nil
+        }
+        return Self.findWindowID(in: tabs, matchingTTY: fullTTY)
+    }
+
     func launch(command: String, cwd: String) throws {
         // `--single-instance` makes repeat launches reuse the same kitty
         // process; `--listen-on` exposes the remote-control socket so future
