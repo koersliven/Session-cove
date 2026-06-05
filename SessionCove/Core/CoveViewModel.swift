@@ -34,6 +34,9 @@ enum NotchStatus: Equatable {
 
 @Observable
 final class CoveViewModel: @unchecked Sendable {
+    /// Accessor for managed session controller (singleton). Exposed so the
+    /// StatusMenu can call startSession via the viewModel reference.
+    var managedSessions: ManagedSessionController { ManagedSessionController.shared }
     var islands: [ProjectIsland] = []
     var uiMode: CoveUIMode = .pet
     var openReason: CoveOpenReason = .unknown
@@ -485,31 +488,22 @@ final class CoveViewModel: @unchecked Sendable {
         CoveSoundManager.shared.play(.bubblePop)
         guard let request = pendingHookRequest else { return }
 
-        // For question answers: schedule terminal text injection BEFORE
-        // resolving the hook (which lets the Python bridge exit, unblocking
-        // Claude to render its terminal prompt). The injection fires after a
-        // Terminal text injection only for Claude Code (CLI in a terminal)
-        // AND only for SINGLE-question forms. Multi-question AskUserQuestion
-        // does NOT fallback to a terminal prompt — Claude waits for the hook
-        // to return updatedInput inline. Single-question (especially the
-        // common AskFollowupQuestion pattern) does render a terminal prompt
-        // when the hook stays silent, so injection works there.
-        // Qoder/Cursor are IDE-hosted — injection never applies to them.
-        if request.kind == .question,
-           request.providerId == "claude",
-           request.questions.count == 1,
-           case .answer(let answers) = decision {
-            TerminalTextInjector.injectAnswer(
-                sessionId: request.sessionId,
-                projectPath: request.projectPath,
-                questions: request.questions,
-                answers: answers
-            ) { success in
-                if !success {
-                    print("[CoveViewModel] terminal injection failed — Python bridge fallback will handle via updatedInput")
-                }
-            }
-        }
+        // For question answers: route through managed-session pty if the
+        // session is managed (reliable direct stdin write), otherwise fall back
+        // to the legacy TerminalTextInjector path (unreliable AppleScript).
+        //
+        // Managed sessions: ManagedSessionQuestionHandler writes the answer
+        // directly to the pty master fd. Claude reads it from stdin immediately
+        // — no terminal prompt race. Works for any question count.
+        //
+        // Non-managed (iTerm) sessions: terminal text injection only for
+        // AskUserQuestion answer delivery: the Python hook bridge is now
+        // the SOLE reliable path. It blocks (poll loop) until SC writes
+        // the response file, then emits updatedInput to Claude's stdout.
+        // Terminal injection and pty write are both proven unreliable
+        // (Claude skips the question on silent-exit, streaming overwrites
+        // prompt, etc). The response file write happens below via
+        // ClaudePermissionHook.resolve — no additional action needed here.
 
         do {
             try ClaudePermissionHook.resolve(request: request, decision: decision)

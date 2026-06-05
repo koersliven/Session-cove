@@ -327,23 +327,30 @@ struct HookQuestionView: View {
     }
 
     private func submissionPayload() -> [String: String] {
+        // Claude expects answers keyed by QUESTION TEXT (the human-readable
+        // prompt string), with values being the selected OPTION LABEL (also
+        // human-readable). This matches Ping Island's verified-working format:
+        //   {"你喜欢哪种颜色？": "蓝色"}
+        // NOT internal IDs like {"q1": "q1-o2"} which Claude ignores.
         var payload: [String: String] = [:]
         for question in request.questions {
             let optionIds = selectedOptionIds[question.id, default: []]
             let text = (textAnswers[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
             if !question.options.isEmpty {
-                // Selectable question: id list joined with ",", plus optional
-                // "other..." text appended after a comma so the python hook can
-                // reconstruct the user's intent.
-                var parts = optionIds
-                if question.allowsOther && !text.isEmpty {
-                    parts.append(text)
+                // Map selected option IDs back to their labels
+                let labels = optionIds.compactMap { optId in
+                    question.options.first(where: { $0.id == optId })?.title
                 }
-                payload[question.id] = parts.joined(separator: ",")
+                if question.allowsOther && !text.isEmpty {
+                    // "Other" with custom text: send the user-typed text
+                    payload[question.prompt] = text
+                } else {
+                    payload[question.prompt] = labels.joined(separator: ", ")
+                }
             } else {
                 // Free-text or secret question: send the text verbatim.
-                payload[question.id] = text
+                payload[question.prompt] = text
             }
         }
         return payload

@@ -126,13 +126,12 @@ enum ClaudePermissionHook {
             try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         }
 
-        // Clear stale pending files left over from prior hook script versions —
-        // the python scripts that wrote them are long-dead and won't poll for our response.
-        if let stale = try? fileManager.contentsOfDirectory(at: pendingDirectory, includingPropertiesForKeys: nil) {
-            for url in stale where url.pathExtension == "json" {
-                try? fileManager.removeItem(at: url)
-            }
-        }
+        // DON'T clear pending files on startup — a Python hook may be
+        // actively blocking (poll-waiting for our response) right now.
+        // The per-kind TTL sweep in `pendingRequests()` handles genuinely
+        // stale files (24h for approval, 1h for completion). Clearing here
+        // would kill any in-flight AskUserQuestion hook that's waiting for
+        // the user to answer in the SC popup.
 
         try bridgeScript.data(using: .utf8)?.write(to: scriptURL, options: .atomic)
     }
@@ -413,17 +412,12 @@ enum ClaudePermissionHook {
         // types the answer. The bridge still reads the response file to exit
         // its poll loop cleanly.
         //
-        // ONLY single-question forms qualify: multi-question AskUserQuestion
-        // does NOT fallback to a terminal prompt (Claude waits for the hook
-        // to return updatedInput inline). Without this guard, multi-question
-        // submissions would cause Python to stay silent → Claude hangs.
+        // Answer delivery is now 100% through the Python hook stdout path.
+        // Python blocking-polls for this response file, reads the answers,
+        // emits updatedInput to Claude's stdout. No terminal injection,
+        // no pty write — just the file + hook stdout protocol.
         if case .answer(let answers) = decision {
             response["answers"] = answers
-            let isSingleQuestion = (request.questions.count == 1)
-            let isClaude = (request.providerId == "claude")
-            if isSingleQuestion && isClaude {
-                response["useTerminalInjection"] = true
-            }
         }
         let data = try JSONSerialization.data(withJSONObject: response, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: responseDirectory.appendingPathComponent("\(request.id).json"), options: .atomic)
@@ -844,15 +838,8 @@ enum ClaudePermissionHook {
             # question flow rather than us injecting a guessed answer.
             if not isinstance(decision, dict) or decision.get("decision") != "answer":
                 return
-            # Terminal injection path (v4+): when the Swift side sets
-            # `useTerminalInjection: true`, the answer is being delivered
-            # by writing directly to the session's tty. Stay SILENT on stdout
-            # so Claude renders its built-in terminal prompt (where the typed
-            # text will land). The Python bridge's only job is to exit the
-            # poll loop cleanly — which we do by returning without printing.
-            if decision.get("useTerminalInjection"):
-                debug_log("question: useTerminalInjection=true, staying silent")
-                return
+            # (useTerminalInjection flag removed — terminal injection approach
+            # was disproven. All answers now flow through hook stdout.)
             # Fallback path: terminal injection failed or not requested.
             # AskUserQuestion / AskFollowupQuestion completion. Claude's
             # PreToolUse hookSpecificOutput.updatedInput **replaces the
@@ -865,11 +852,16 @@ enum ClaudePermissionHook {
             answers = decision.get("answers") or {}
             merged = dict(tool_input) if isinstance(tool_input, dict) else {}
             merged["answers"] = answers
+            # Format from ping-island (verified working): updatedInput
+            # MUST be nested inside decision, not at hookSpecificOutput
+            # top level. Claude reads decision.updatedInput.
             print(json.dumps({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "updatedInput": merged,
+                    "decision": {
+                        "behavior": "allow",
+                        "updatedInput": merged,
+                    }
                 }
             }, ensure_ascii=False), flush=True)
 
@@ -901,11 +893,16 @@ enum ClaudePermissionHook {
             answers = decision.get("answers") or {}
             merged = dict(tool_input) if isinstance(tool_input, dict) else {}
             merged["answers"] = answers
+            # Format from ping-island (verified working): updatedInput
+            # MUST be nested inside decision, not at hookSpecificOutput
+            # top level. Claude reads decision.updatedInput.
             print(json.dumps({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "updatedInput": merged,
+                    "decision": {
+                        "behavior": "allow",
+                        "updatedInput": merged,
+                    }
                 }
             }, ensure_ascii=False), flush=True)
 
@@ -1379,19 +1376,20 @@ enum ClaudePermissionHook {
                 json.dump(request, f, ensure_ascii=False, indent=2, sort_keys=True)
             os.replace(tmp, request_path)
 
-            # Question events (AskUserQuestion/AskFollowupQuestion): exit
-            # immediately after writing the pending file. This is CRITICAL
-            # — if we block here (poll loop), Claude waits for our hook to
-            # finish before rendering its terminal prompt. By exiting 0
-            # with no stdout, Claude falls back to its built-in interactive
-            # terminal prompt (the numbered option list the user sees in
-            # iTerm). Meanwhile SC's Swift poll picks up the pending file,
-            # renders the question form UI, and on submit injects the
-            # answer via TerminalTextInjector into the already-waiting
-            # terminal prompt. Fire-and-forget, just like Stop events.
-            if is_question_event:
-                debug_log("question: fire-and-forget (exit 0, let Claude render terminal prompt)")
-                return 0
+            # Question events now BLOCK just like approval events — Python
+            # writes the pending file, polls for SC's response, then emits
+            # updatedInput to Claude's stdout. This is the ONLY reliable
+            # path: Claude ignores terminal stdin for AskUserQuestion and
+            # treats silent-exit as "user skipped the question". The old
+            # fire-and-forget approach (exit 0 → terminal prompt) was
+            # disproven: Claude skips the question entirely when hook is
+            # silent, never renders a terminal prompt at all.
+            #
+            # For managed sessions (SC owns the pty), the answers still
+            # flow through this same hook stdout path — SC writes the
+            # response file, Python emits updatedInput, Claude continues.
+            # The pty master fd is only used as a FALLBACK if this path
+            # somehow fails (future consideration).
 
             deadline = time.time() + TIMEOUT_SECONDS
             last_touch = time.time()

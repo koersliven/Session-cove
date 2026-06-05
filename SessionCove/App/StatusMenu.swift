@@ -77,6 +77,14 @@ enum StatusMenu {
             mockCompletion.target = MenuActionTarget.shared
             menu.addItem(mockCompletion)
 
+            let startManaged = NSMenuItem(
+                title: "Debug: Start Managed Claude Session",
+                action: #selector(MenuActionTarget.startManagedSession(_:)),
+                keyEquivalent: ""
+            )
+            startManaged.target = MenuActionTarget.shared
+            menu.addItem(startManaged)
+
             menu.addItem(.separator())
         }
 
@@ -131,6 +139,20 @@ final class MenuActionTarget: NSObject {
 
     @objc func mockCompletion(_ sender: Any?) {
         viewModel?.showMockCompletionRequest()
+    }
+
+    @objc func startManagedSession(_ sender: Any?) {
+        guard let vm = viewModel else { return }
+        // Use the first island's project path as cwd, or fall back to home dir
+        let cwd = vm.selectedIsland?.path
+            ?? vm.islands.first?.path
+            ?? NSHomeDirectory()
+        let sid = vm.managedSessions.startSession(cwd: cwd)
+        if let sid {
+            print("[StatusMenu] started managed session \(sid.prefix(12)) in \(cwd)")
+        } else {
+            print("[StatusMenu] failed to start managed session")
+        }
     }
 
     @objc func quit(_ sender: Any?) {
