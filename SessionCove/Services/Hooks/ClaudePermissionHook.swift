@@ -831,7 +831,7 @@ enum ClaudePermissionHook {
             debug_log("emit_permission stdout=" + payload)
             print(payload, flush=True)
 
-        def emit_claude_question(decision, tool_input):
+        def emit_claude_question(decision, tool_input, hook_event="PreToolUse"):
             # Question event closed without an answer (timeout, Session Cove
             # cancellation, or guard against a non-answer decision sneaking in)
             # — stay silent so Claude falls back to its built-in terminal
@@ -855,15 +855,17 @@ enum ClaudePermissionHook {
             # Format from ping-island (verified working): updatedInput
             # MUST be nested inside decision, not at hookSpecificOutput
             # top level. Claude reads decision.updatedInput.
-            print(json.dumps({
+            output = json.dumps({
                 "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
+                    "hookEventName": hook_event,
                     "decision": {
                         "behavior": "allow",
                         "updatedInput": merged,
                     }
                 }
-            }, ensure_ascii=False), flush=True)
+            }, ensure_ascii=False)
+            debug_log("QUESTION EMIT [" + hook_event + "]: " + output[:500])
+            print(output, flush=True)
 
         def emit_cursor_permission(decision):
             # Cursor's IDE-internal sandbox dialog ignores hook stdout
@@ -875,7 +877,7 @@ enum ClaudePermissionHook {
             # default-allow timeout doesn't get tripped.
             print('{"decision":"allow"}', flush=True)
 
-        def emit_cursor_question(decision, tool_input):
+        def emit_cursor_question(decision, tool_input, hook_event="PreToolUse"):
             # Cursor doesn't have a typed-question hook event today.
             # Match Claude's silent-on-non-answer behavior: stay quiet
             # so Cursor's built-in fallback runs.
@@ -896,15 +898,17 @@ enum ClaudePermissionHook {
             # Format from ping-island (verified working): updatedInput
             # MUST be nested inside decision, not at hookSpecificOutput
             # top level. Claude reads decision.updatedInput.
-            print(json.dumps({
+            output = json.dumps({
                 "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
+                    "hookEventName": hook_event,
                     "decision": {
                         "behavior": "allow",
                         "updatedInput": merged,
                     }
                 }
-            }, ensure_ascii=False), flush=True)
+            }, ensure_ascii=False)
+            debug_log("QUESTION EMIT [" + hook_event + "]: " + output[:500])
+            print(output, flush=True)
 
         DIALECTS = {
             "claude": {"permission": emit_claude_permission, "question": emit_claude_question},
@@ -935,10 +939,10 @@ enum ClaudePermissionHook {
             else:
                 dialect["permission"](None)
 
-        def output_decision(decision, is_question_event=False, tool_input=None, provider_id="claude"):
+        def output_decision(decision, is_question_event=False, tool_input=None, provider_id="claude", hook_event="PreToolUse"):
             dialect = _dialect(provider_id)
             if is_question_event:
-                dialect["question"](decision, tool_input)
+                dialect["question"](decision, tool_input, hook_event)
             else:
                 dialect["permission"](decision)
 
@@ -1100,12 +1104,19 @@ enum ClaudePermissionHook {
                 }]
             return []
 
-        def make_request_id(payload):
+        def make_request_id(payload, event_name=None):
             stable = {
                 "tool_name": payload.get("tool_name"),
                 "tool_input": payload.get("tool_input"),
                 "cwd": payload.get("cwd"),
             }
+            # Include hook_event_name in the hash so PreToolUse and
+            # PermissionRequest for the SAME AskUserQuestion get
+            # DIFFERENT request IDs. Without this they race on the
+            # same pending/response file pair — one wins, the other
+            # sees the file vanish and emits nothing (or stale data).
+            if event_name:
+                stable["hook_event_name"] = event_name
             seed = json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str)
             return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
@@ -1313,17 +1324,30 @@ enum ClaudePermissionHook {
             # approval path. Question events always surface in the UI so the
             # user can answer; nothing to "pre-approve" for them.
             # Claude fires BOTH PreToolUse and PermissionRequest for question
-            # tools (AskUserQuestion / AskFollowupQuestion). The PreToolUse
-            # path writes a pending file and exits silently (fire-and-forget)
-            # so Claude falls back to its terminal prompt. The PermissionRequest
-            # path MUST emit allow — otherwise Claude blocks waiting for a
-            # permission decision and the terminal prompt never renders.
-            # Emitting allow here just means "yes you may ask the user a
-            # question" — it does NOT bypass the actual Q&A flow.
+            # tools. Answer delivery is ONLY reliable through the PreToolUse
+            # hook (verified: test_bridge emitting decision.updatedInput from
+            # PreToolUse works; PermissionRequest path unverified for
+            # updatedInput). So:
+            #   - PermissionRequest + AskUserQuestion → emit allow immediately
+            #     (tells Claude "permission granted to ask the question")
+            #   - PreToolUse + AskUserQuestion → write pending + poll + emit
+            #     updatedInput (delivers the actual answer)
+            #
+            # CRITICAL: SC must be the ONLY PreToolUse hook matching
+            # AskUserQuestion. If another tool (ping-island, r2c) also has a
+            # PreToolUse matcher=* that handles AskUserQuestion, the two hooks
+            # will race. SC's install() strips competing entries.
+            # Ping Island verified behavior: for AskUserQuestion, BOTH
+            # PreToolUse AND PermissionRequest must return the SAME
+            # updatedInput with answers. Claude requires both hooks to
+            # agree on the answer — if PermissionRequest returns just
+            # "allow" without updatedInput, Claude ignores the PreToolUse
+            # answer entirely. So: treat PermissionRequest + question tool
+            # exactly like PreToolUse + question tool (block, poll, emit
+            # updatedInput).
             if is_question_tool and event_name == "PermissionRequest":
-                debug_log("PermissionRequest for question tool — emit allow (unblock prompt rendering)")
-                print_allow(provider_id)
-                return 0
+                debug_log("PermissionRequest for question tool — will block+emit updatedInput (same as PreToolUse)")
+                is_question_event = True
 
             if not is_question_event:
                 if match_allowlist(payload, provider_id):
@@ -1333,7 +1357,7 @@ enum ClaudePermissionHook {
                     print_allow(provider_id)
                     return 0
 
-            request_id = make_request_id(payload)
+            request_id = make_request_id(payload, event_name=event_name)
             request_path = os.path.join(PENDING, f"{request_id}.json")
             response_path = os.path.join(RESPONSES, f"{request_id}.json")
 
@@ -1397,7 +1421,7 @@ enum ClaudePermissionHook {
                 if os.path.exists(response_path):
                     with open(response_path, "r", encoding="utf-8") as f:
                         decision = json.load(f)
-                    output_decision(decision, is_question_event=is_question_event, tool_input=tool_input, provider_id=provider_id)
+                    output_decision(decision, is_question_event=is_question_event, tool_input=tool_input, provider_id=provider_id, hook_event=event_name)
                     try:
                         os.remove(request_path)
                     except OSError:
@@ -1419,7 +1443,7 @@ enum ClaudePermissionHook {
                     if os.path.exists(response_path):
                         with open(response_path, "r", encoding="utf-8") as f:
                             decision = json.load(f)
-                        output_decision(decision, is_question_event=is_question_event, tool_input=tool_input, provider_id=provider_id)
+                        output_decision(decision, is_question_event=is_question_event, tool_input=tool_input, provider_id=provider_id, hook_event=event_name)
                         try:
                             os.remove(response_path)
                         except OSError:
