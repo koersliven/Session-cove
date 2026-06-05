@@ -133,7 +133,74 @@ enum ClaudePermissionHook {
         // would kill any in-flight AskUserQuestion hook that's waiting for
         // the user to answer in the SC popup.
 
+        // Write the legacy file-poll Python bridge (still used as fallback
+        // for approval/stop events that don't go through the socket).
         try bridgeScript.data(using: .utf8)?.write(to: scriptURL, options: .atomic)
+
+        // Write the socket bridge Python + exec wrapper
+        let socketBridgePath = binDirectory.appendingPathComponent("session_cove_socket_bridge.py")
+        try socketBridgeScript.data(using: .utf8)?.write(to: socketBridgePath, options: .atomic)
+
+        let wrapperPath = binDirectory.appendingPathComponent("session-cove-bridge")
+        let wrapperContent = """
+        #!/bin/zsh
+        exec /usr/bin/python3 '\(socketBridgePath.path)' "$@"
+        """
+        try wrapperContent.data(using: .utf8)?.write(to: wrapperPath, options: .atomic)
+        // Make wrapper executable
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: wrapperPath.path
+        )
+    }
+
+    private static var socketBridgeScript: String {
+        """
+        #!/usr/bin/env python3
+        import json
+        import socket
+        import sys
+
+        SOCKET_PATH = "/tmp/session-cove.sock"
+
+        def main():
+            raw = sys.stdin.read()
+            if not raw.strip():
+                return 0
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                return 0
+
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.connect(SOCKET_PATH)
+            except (OSError, ConnectionRefusedError):
+                event = payload.get("hook_event_name", "")
+                if event == "PermissionRequest":
+                    print(json.dumps({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}))
+                return 0
+
+            sock.sendall((json.dumps(payload, ensure_ascii=False) + "\\n").encode("utf-8"))
+
+            response_data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                response_data += chunk
+                if b"\\n" in response_data:
+                    break
+            sock.close()
+
+            response_str = response_data.decode("utf-8").strip()
+            if response_str and response_str != "{}":
+                print(response_str, flush=True)
+            return 0
+
+        if __name__ == "__main__":
+            raise SystemExit(main())
+        """
     }
 
     // MARK: - Per-provider settings paths
@@ -519,9 +586,12 @@ enum ClaudePermissionHook {
         let existingData = try? Data(contentsOf: settingsURL)
         var root: [String: Any] = existingData.flatMap(HookConfigParser.parseJSONObject(from:)) ?? [:]
         var hooks = root["hooks"] as? [String: Any] ?? [:]
-        // `--provider <id>` tells the bridge script which dialect to emit
-        // on stdout. Schema v4 routes via the bridge's DIALECTS table.
-        let scriptCommand = "/usr/bin/python3 \(shellQuoted(scriptURL.path)) --provider \(providerArg)"
+        // Use the exec-wrapper socket bridge (connects to /tmp/session-cove.sock).
+        // This replaces the old file-poll Python script. The wrapper does
+        // `exec python3 session_cove_socket_bridge.py` — same pattern as
+        // Ping Island's bridge wrapper.
+        let bridgeWrapperPath = binDirectory.appendingPathComponent("session-cove-bridge").path
+        let scriptCommand = "\(shellQuoted(bridgeWrapperPath)) --provider \(providerArg)"
 
         let existingEntries = hooks["PermissionRequest"] as? [[String: Any]] ?? []
         let preservedEntries = existingEntries.filter { entry in
@@ -724,11 +794,13 @@ enum ClaudePermissionHook {
     }
 
     private static func containsSessionCoveCommandInData(_ data: Data) -> Bool {
-        String(data: data, encoding: .utf8)?.contains("session_cove_claude_hook.py") == true
+        guard let str = String(data: data, encoding: .utf8) else { return false }
+        return str.contains("session_cove_claude_hook.py") || str.contains("session-cove-bridge")
     }
 
     private static func containsSessionCoveCommand(_ entry: [String: Any]) -> Bool {
-        if (entry["command"] as? String)?.contains("session_cove_claude_hook.py") == true {
+        if let cmd = entry["command"] as? String,
+           cmd.contains("session_cove_claude_hook.py") || cmd.contains("session-cove-bridge") {
             return true
         }
 

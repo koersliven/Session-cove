@@ -20,6 +20,10 @@ final class WindowManager {
         self.viewModel = viewModel
         MenuActionTarget.shared.viewModel = viewModel
 
+        // Start Unix socket server BEFORE installing hooks — the bridge
+        // needs the socket to be listening when Claude calls it.
+        HookSocketServer.shared.start()
+
         do {
             try ClaudePermissionHook.install()
             viewModel.startHookPolling()
