@@ -266,13 +266,14 @@ final class HookSocketServer {
         let sessionId = request.sessionId ?? ""
         let cwd = request.payload["cwd"] as? String ?? ""
 
-        // Build request_id (include event_name to avoid collision between
-        // PreToolUse and PermissionRequest for the same AskUserQuestion)
+        // Build request_id WITHOUT event_name so PreToolUse and PermissionRequest
+        // for the same AskUserQuestion share the SAME pending/response file.
+        // Both bridge processes poll the same ID, both see the same answer,
+        // and SC only shows ONE popup (first pending wins; second = duplicate id → skip).
         let stable: [String: Any] = [
             "tool_name": toolName,
             "tool_input": toolInput,
-            "cwd": cwd,
-            "hook_event_name": eventName
+            "cwd": cwd
         ]
         let seed = (try? JSONSerialization.data(withJSONObject: stable, options: .sortedKeys))
             .flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -325,9 +326,11 @@ final class HookSocketServer {
                 if let data = try? Data(contentsOf: responsePath),
                    let decision = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
 
-                    // Clean up files
-                    try? FileManager.default.removeItem(at: pendingPath)
-                    try? FileManager.default.removeItem(at: responsePath)
+                    // DON'T delete files — the OTHER bridge process
+                    // (PreToolUse/PermissionRequest for same question)
+                    // shares the same pending/response pair and needs
+                    // to read the same answer. SC's TTL sweep handles
+                    // cleanup.
 
                     let decisionValue = decision["decision"] as? String ?? "allow"
 
@@ -343,8 +346,24 @@ final class HookSocketServer {
                     }
                 }
             }
-            // Check if pending was removed (SC cancelled / stale sweep)
+            // Pending gone but response might exist (written by SC after
+            // user answered — the other bridge process may have already
+            // polled it). Re-check response before falling back.
             if !FileManager.default.fileExists(atPath: pendingPath.path) {
+                if FileManager.default.fileExists(atPath: responsePath.path),
+                   let data = try? Data(contentsOf: responsePath),
+                   let decision = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let decisionValue = decision["decision"] as? String ?? "allow"
+                    if isQuestionTool && decisionValue == "answer" {
+                        let answers = decision["answers"] as? [String: String] ?? [:]
+                        var merged = toolInput
+                        merged["answers"] = answers
+                        return .updatedInput(eventName: eventName, input: merged)
+                    }
+                    return decisionValue == "deny"
+                        ? .deny(eventName: eventName)
+                        : .allow(eventName: eventName)
+                }
                 return .allow(eventName: eventName)
             }
             Thread.sleep(forTimeInterval: 0.2)
