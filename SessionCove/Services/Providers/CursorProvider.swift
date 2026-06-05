@@ -51,4 +51,15 @@ struct CursorProvider: AgentProvider {
         completionTitle: "任务完成",
         askQuestionTitle: "Question from Cursor"
     )
+
+    /// /Applications/Cursor.app — ToDesktop-wrapped Electron build.
+    let bundleIdentifier: String? = "com.todesktop.230313mzl4w4u92"
+
+    /// Empirically Cursor does NOT honor SC's stdout decision — even
+    /// emitting both `decision` + `permission` keys with `timeout=60`
+    /// the IDE still hangs as if waiting for an internal click. We
+    /// retract the earlier docs-based assumption and treat Cursor like
+    /// Qoder: SC popup is a "通知 + 回到 Cursor" reminder, the actual
+    /// approval lives inside the IDE.
+    let supportsExternalApproval: Bool = false
 }

@@ -9,11 +9,11 @@ struct CoveRootView: View {
             .onChange(of: viewModel.frameSize) { _, newSize in
                 onFrameSizeChange?(newSize)
             }
-            // pingHeight depends on pendingHookRequest?.kind + approvalExpanded.
-            // frameSize stays `.ping` across kind transitions and chevron toggles,
+            // pingHeight depends on pendingHookRequest?.kind +
+            // approvalExpanded. frameSize stays `.ping` across kind transitions
             // so onChange(of: frameSize) wouldn't fire — re-emit the callback
-            // here so PetWindowController.updatePanelFrame re-computes the
-            // NSPanel size with the new pingHeightOverride.
+            // whenever pingHeight shifts so PetWindowController re-sizes
+            // the NSPanel.
             .onChange(of: viewModel.pingHeight) { _, _ in
                 if viewModel.frameSize == .ping {
                     onFrameSizeChange?(.ping)
@@ -34,10 +34,9 @@ struct CoveRootView: View {
 
         case .ping:
             // Width matches PetPlacementStrategy (petSize + pingCardWidth);
-            // height kind-aware (approval=72/240, question=360,
-            // completion=120). The .onChange at the top of body re-emits
-            // onFrameSizeChange whenever pingHeight shifts so the panel
-            // resizes mid-popping when the chevron toggles.
+            // height kind-aware via viewModel.pingHeight. The .onChange
+            // listener at the top of body re-emits onFrameSizeChange
+            // whenever pingHeight shifts so the panel resizes mid-popping.
             pingView
                 .frame(
                     width: PetPlacementStrategy.petSize.width + PetPlacementStrategy.pingCardWidth,
@@ -75,7 +74,12 @@ struct CoveRootView: View {
     }
 
     private var petInPing: some View {
-        CoveMascotView(state: .attention, scale: .pet, grounded: false)
+        CoveMascotView(
+            state: .attention,
+            scale: .pet,
+            grounded: false,
+            providerPrefix: viewModel.activePetProviderId
+        )
             .frame(width: 48, height: 48)
             .padding(.horizontal, 4)
     }

@@ -173,17 +173,35 @@ struct IslandSessionListView: View {
                 Spacer()
                     .contentShape(Rectangle())
                     .onTapGesture { viewModel.selectSession(session) }
-                Button {
-                    viewModel.resumeSession(session)
-                } label: {
-                    Text(session.status == .active ? "OPEN" : "GO")
+                // Only Claude sessions can be reliably reopened via tty
+                // lookup. Qoder/Cursor sessions are owned by their IDE
+                // window — show a disabled label so the user knows they
+                // need to switch to the IDE themselves.
+                if session.providerId == "claude" {
+                    Button {
+                        viewModel.resumeSession(session)
+                    } label: {
+                        Text(session.status == .active ? "OPEN" : "GO")
+                            .font(.system(size: 8, weight: .black, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 5)
+                            .background { PixelBox(fill: Color(red: 0.12, green: 0.24, blue: 0.34), edge: PixelPalette.foam.opacity(0.58)) }
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text(providerBadgeLabel(session.providerId))
                         .font(.system(size: 8, weight: .black, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.white.opacity(0.55))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 5)
-                        .background { PixelBox(fill: Color(red: 0.12, green: 0.24, blue: 0.34), edge: PixelPalette.foam.opacity(0.58)) }
+                        .background {
+                            PixelBox(
+                                fill: Color(red: 0.12, green: 0.24, blue: 0.34).opacity(0.5),
+                                edge: PixelPalette.foam.opacity(0.25)
+                            )
+                        }
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(8)
@@ -296,6 +314,15 @@ struct IslandSessionListView: View {
         case .active: "CODING"
         case .recentlyIdle: "IDLE"
         case .archived: "SLEEP"
+        }
+    }
+
+    private func providerBadgeLabel(_ providerId: String) -> String {
+        switch providerId {
+        case "qoder":     return "QODER"
+        case "qoderwork": return "QOWORK"
+        case "cursor":    return "CURSOR"
+        default:          return "AGENT"
         }
     }
 

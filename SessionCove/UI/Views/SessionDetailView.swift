@@ -175,14 +175,42 @@ struct SessionDetailView: View {
 
     private var actionDock: some View {
         HStack(spacing: 10) {
-            actionButton(
-                label: session.status == .active ? "OPEN TERMINAL" : "RESUME",
-                icon: session.status == .active ? "arrow.uturn.forward" : "play.fill",
-                style: .primary
-            ) {
-                viewModel.resumeSession(session)
+            // Resume / focus only works for Claude — its CLI lives in a
+            // terminal tty that we can locate via `ps`. Qoder/Cursor live
+            // inside their own Electron IDE and can't be reattached the
+            // same way; routing to the user's last Claude terminal would
+            // be misleading. Show a disabled "IDE 内打开" hint instead.
+            if session.providerId == "claude" {
+                actionButton(
+                    label: session.status == .active ? "OPEN TERMINAL" : "RESUME",
+                    icon: session.status == .active ? "arrow.uturn.forward" : "play.fill",
+                    style: .primary
+                ) {
+                    viewModel.resumeSession(session)
+                }
+            } else {
+                actionButton(
+                    label: providerLabel(session.providerId) + " 内打开",
+                    icon: "arrow.up.right.square",
+                    style: .primary
+                ) {
+                    // No-op: just a hint that the user must focus the
+                    // IDE themselves. Could open the IDE app via
+                    // NSWorkspace later, but for now the disabled style
+                    // signals "not auto-resumable".
+                }
+                .disabled(true)
             }
             trashButton
+        }
+    }
+
+    private func providerLabel(_ providerId: String) -> String {
+        switch providerId {
+        case "qoder":     return "Qoder"
+        case "qoderwork": return "QoderWork"
+        case "cursor":    return "Cursor"
+        default:          return "Agent"
         }
     }
 

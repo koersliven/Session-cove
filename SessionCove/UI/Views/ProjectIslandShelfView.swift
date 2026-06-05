@@ -117,6 +117,9 @@ struct ProjectIslandShelfView: View {
         case .attention: PixelPalette.alert
         case .idle: PixelPalette.sand
         case .sleeping, .dragged: .clear
+        // Pet micro-actions inherit the working accent — they only fire
+        // while the agent is working anyway.
+        case .petBlink, .petSip, .petBubble, .petCelebrate: PixelPalette.grass
         }
     }
 

@@ -5,8 +5,14 @@ struct PetMascotView: View {
     @State private var isDragging = false
 
     private var mascotState: PixelMascotState {
+        // Highest priority: drag + permission attention. Pet micro
+        // actions never override these.
         if isDragging { return .dragged }
         if viewModel.pendingHookRequest != nil { return .attention }
+        // Pet ambient micro-action (blink/sip/bubble) — only valid on
+        // top of the working / idle baseline; viewModel scheduler clears
+        // it after ~1s.
+        if let micro = viewModel.currentPetMicroState { return micro }
         // The body block reads `mascotState` THREE times per frame (state
         // input, vertical offset, breath scale). Resolving via
         // `representativeSession` re-sorts islands + sessions on every read
@@ -50,7 +56,12 @@ struct PetMascotView: View {
                 let state = mascotState
                 let time = timeline.date.timeIntervalSinceReferenceDate
                 ZStack {
-                    CoveMascotView(state: state, scale: .pet, grounded: false)
+                    CoveMascotView(
+                        state: state,
+                        scale: .pet,
+                        grounded: false,
+                        providerPrefix: viewModel.activePetProviderId
+                    )
                         .offset(y: isDragging ? 0 : verticalOffset(time, state: state))
                         .scaleEffect(breathScale(time))
 
@@ -71,11 +82,17 @@ struct PetMascotView: View {
 
     private func verticalOffset(_ time: TimeInterval, state: PixelMascotState) -> CGFloat {
         switch state {
-        case .working:   CGFloat(sin(time * .pi * 5) * 1.5)
-        case .idle:      CGFloat(sin(time * .pi * 1.2) * 0.8)
-        case .sleeping:  CGFloat(sin(time * .pi * 0.8) * 0.6)
-        case .attention: CGFloat(sin(time * .pi * 7) * 2.0)
-        case .dragged:   0
+        case .working:       CGFloat(sin(time * .pi * 5) * 1.5)
+        case .idle:          CGFloat(sin(time * .pi * 1.2) * 0.8)
+        case .sleeping:      CGFloat(sin(time * .pi * 0.8) * 0.6)
+        case .attention:     CGFloat(sin(time * .pi * 7) * 2.0)
+        case .dragged:       0
+        // Pet micro-actions: gentle breathing-style float so the sprite
+        // doesn't read as static during the action.
+        case .petBlink:      CGFloat(sin(time * .pi * 1.4) * 0.6)
+        case .petSip:        CGFloat(sin(time * .pi * 2.2) * 0.8)
+        case .petBubble:     CGFloat(sin(time * .pi * 2.6) * 1.2)
+        case .petCelebrate:  CGFloat(abs(sin(time * .pi * 6)) * 2.0)
         }
     }
 

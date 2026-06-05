@@ -54,19 +54,31 @@ enum SessionScanner {
                 continue
             }
 
-            guard let files = try? fileManager.contentsOfDirectory(atPath: dirPath) else {
-                continue
+            // Walk every configured subpath so providers like Qoder, whose
+            // transcripts live both at the project root AND under a
+            // `transcript/` subdirectory, get full coverage. Most providers
+            // declare `[""]` (Claude default) and only walk the project root.
+            var jsonlPaths: [(filePath: String, fileName: String)] = []
+            for subpath in provider.transcriptSubpaths {
+                let scanPath = subpath.isEmpty ? dirPath : "\(dirPath)/\(subpath)"
+                var isSubDir: ObjCBool = false
+                guard fileManager.fileExists(atPath: scanPath, isDirectory: &isSubDir),
+                      isSubDir.boolValue else {
+                    continue
+                }
+                guard let files = try? fileManager.contentsOfDirectory(atPath: scanPath) else {
+                    continue
+                }
+                for file in files where file.hasSuffix(".jsonl") && !file.hasPrefix("agent-") {
+                    jsonlPaths.append((filePath: "\(scanPath)/\(file)", fileName: file))
+                }
             }
-
-            let jsonlFiles = files.filter { $0.hasSuffix(".jsonl") && !$0.hasPrefix("agent-") }
-            guard !jsonlFiles.isEmpty else { continue }
+            guard !jsonlPaths.isEmpty else { continue }
 
             var sessions: [SessionRecord] = []
-
-            for file in jsonlFiles {
-                let filePath = "\(dirPath)/\(file)"
+            for entry in jsonlPaths {
                 if let record = SessionParser.parse(
-                    filePath: filePath,
+                    filePath: entry.filePath,
                     projectDirEncoded: dirName,
                     providerId: provider.id
                 ) {

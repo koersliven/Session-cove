@@ -12,6 +12,12 @@ enum MascotImage {
     static let idle: NSImage? = loadCropped("claude_idle")
     static let wink: NSImage? = loadCropped("claude_wink")
     static let island: NSImage? = loadCropped("island")
+    /// Pet-mode micro-action sprites. White-bg art for now; transparent
+    /// versions can replace these without code changes.
+    static let petBlink: NSImage? = loadCropped("claude_pet_blink")
+    static let petSip: NSImage? = loadCropped("claude_pet_sip")
+    static let petBubble: NSImage? = loadCropped("claude_pet_bubble")
+    static let petCelebrate: NSImage? = loadCropped("claude_pet_celebrate")
 
     /// Resolves a per-provider mascot by trying `<prefix>_<state>` first and
     /// falling back to `claude_<state>` when the provider has no dedicated
@@ -26,9 +32,27 @@ enum MascotImage {
         case .sleeping: suffix = "sleeping"
         case .attention: suffix = "attention"
         case .dragged: suffix = "wink"
+        case .petBlink: suffix = "pet_blink"
+        case .petSip: suffix = "pet_sip"
+        case .petBubble: suffix = "pet_bubble"
+        case .petCelebrate: suffix = "pet_celebrate"
         }
-        if prefix != "claude", let custom = loadCropped("\(prefix)_\(suffix)") {
-            return custom
+        // Provider fallback chain (non-Claude only):
+        //   1. `<prefix>_<state>` — full per-state art (none today for
+        //      Qoder/Cursor — placeholder for future variants).
+        //   2. `<prefix>_mascot`  — single-image mascot used as the
+        //      character for every base state. Loses pet-blink/sip
+        //      animation but keeps the IDENTITY consistent (Qoder
+        //      drawing for a Qoder session, Cursor for Cursor).
+        //   3. `claude_<state>`   — final fallback, ensures we never
+        //      render a blank.
+        if prefix != "claude" {
+            if let perState = loadCropped("\(prefix)_\(suffix)") {
+                return perState
+            }
+            if let single = loadCropped("\(prefix)_mascot") {
+                return single
+            }
         }
         return loadCropped("claude_\(suffix)")
     }

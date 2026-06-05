@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct PermissionPingCard: View {
     let request: HookPermissionRequest
@@ -11,6 +12,15 @@ struct PermissionPingCard: View {
     private var hasExpandableDetail: Bool {
         if let json = request.toolInputJSON, !json.isEmpty { return true }
         return false
+    }
+
+    /// Provider that emitted this request. Drives whether we render the
+    /// approve/deny trio (Claude) or the "回到 IDE" reminder button
+    /// (Qoder/Cursor — IDE sandbox dialogs ignore hook stdout).
+    private var provider: any AgentProvider {
+        MainActor.assumeIsolated {
+            AgentProviderRegistry.shared.provider(for: request)
+        }
     }
 
     var body: some View {
@@ -34,10 +44,14 @@ struct PermissionPingCard: View {
 
                 Spacer(minLength: 4)
 
-                HStack(spacing: 5) {
-                    pingButton(.deny, style: .quiet)
-                    pingButton(.alwaysAllow, style: .primary)
-                    pingButton(.allow, style: .blue)
+                if provider.supportsExternalApproval {
+                    HStack(spacing: 5) {
+                        pingButton(.deny, style: .quiet)
+                        pingButton(.alwaysAllow, style: .primary)
+                        pingButton(.allow, style: .blue)
+                    }
+                } else {
+                    focusProviderButton
                 }
             }
 
@@ -155,6 +169,51 @@ struct PermissionPingCard: View {
         default:
             return json
         }
+    }
+
+    /// Single-button reminder for IDE-hosted providers (Qoder, Cursor)
+    /// whose sandbox dialogs ignore hook responses. Tapping activates
+    /// the host app via NSRunningApplication so the user can resolve the
+    /// dialog in-IDE; SC then dismisses the ping by emitting acknowledge.
+    private var focusProviderButton: some View {
+        Button {
+            if let bid = provider.bundleIdentifier,
+               let app = NSRunningApplication.runningApplications(
+                withBundleIdentifier: bid
+               ).first {
+                if #available(macOS 14.0, *) {
+                    app.activate()
+                } else {
+                    app.activate(options: [.activateAllWindows])
+                }
+            }
+            // Dismiss the SC ping. The provider doesn't actually care
+            // about our decision (acknowledge / allow / etc. all
+            // produce the same on-disk effect — pending is removed and
+            // Python emits the dialect's stdout, which the IDE ignores
+            // anyway). Acknowledge is the most semantically honest.
+            onDecision(.acknowledge)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.up.right.square.fill")
+                    .font(.system(size: 10, weight: .bold))
+                Text("回到 \(provider.displayName)")
+                    .font(.system(size: 10, weight: .black, design: .monospaced))
+            }
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .background(
+                Capsule()
+                    .fill(Color(red: 0.12, green: 0.44, blue: 0.85).opacity(0.86))
+                    .overlay(Capsule().stroke(.white.opacity(0.2), lineWidth: 1))
+            )
+        }
+        .buttonStyle(.plain)
+        .help("\(provider.displayName) 的审批由 IDE 自己处理 — 点击切回 \(provider.displayName) 完成")
     }
 
     private func pingButton(_ decision: HookApprovalDecision, style: PingButtonStyle) -> some View {

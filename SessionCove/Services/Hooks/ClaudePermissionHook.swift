@@ -784,12 +784,37 @@ enum ClaudePermissionHook {
         # The legacy claude path (PermissionRequest + PreToolUse stdout
         # shapes) is preserved bit-for-bit by emit_claude_*.
 
+        DEBUG_LOG_PATH = os.path.expanduser("~/.session-cove/hooks/debug.log")
+
+        def debug_log(msg):
+            try:
+                if os.path.exists(DEBUG_LOG_PATH) and os.path.getsize(DEBUG_LOG_PATH) > 1_000_000:
+                    os.remove(DEBUG_LOG_PATH)
+                with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write("{} pid={} {}\\n".format(
+                        time.strftime("%H:%M:%S"), os.getpid(), msg))
+            except OSError:
+                pass
+
         def emit_claude_permission(decision):
-            if isinstance(decision, dict) and decision.get("decision") == "deny":
-                obj = {"behavior": "deny", "message": "Denied in Session Cove."}
-            else:
-                obj = {"behavior": "allow"}
-            print(json.dumps({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":obj}}, ensure_ascii=False), flush=True)
+            is_deny = isinstance(decision, dict) and decision.get("decision") == "deny"
+            behavior = "deny" if is_deny else "allow"
+            message = "Denied in Session Cove." if is_deny else None
+            inner = {"behavior": behavior}
+            if message:
+                inner["message"] = message
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": inner,
+                    "permissionDecision": behavior,
+                }
+            }
+            if message:
+                output["hookSpecificOutput"]["permissionDecisionReason"] = message
+            payload = json.dumps(output, ensure_ascii=False)
+            debug_log("emit_permission stdout=" + payload)
+            print(payload, flush=True)
 
         def emit_claude_question(decision, tool_input):
             # Question event closed without an answer (timeout, Session Cove
@@ -818,17 +843,36 @@ enum ClaudePermissionHook {
             }, ensure_ascii=False), flush=True)
 
         def emit_cursor_permission(decision):
-            # Step 9 will fill this in once Cursor's hook contract is wired.
-            # For now: warn and emit nothing on stdout so Cursor's own flow
-            # isn't accidentally short-circuited by a malformed Claude shape.
-            sys.stderr.write("[session-cove] cursor dialect not yet wired\\n")
+            # Cursor's IDE-internal sandbox dialog ignores hook stdout
+            # decisions (verified empirically across multiple emit shapes).
+            # SC's popup is a "通知 + 回到 Cursor" reminder, NOT an actual
+            # decision pipeline — same model as Qoder. Emit a benign allow
+            # JSON anyway so the hook chain completes cleanly without
+            # blocking other entries (r2c, audit, etc.) and Cursor's own
+            # default-allow timeout doesn't get tripped.
+            print('{"decision":"allow"}', flush=True)
 
         def emit_cursor_question(decision, tool_input):
-            sys.stderr.write("[session-cove] cursor dialect not yet wired\\n")
+            # Cursor doesn't have a typed-question hook event today.
+            # Match Claude's silent-on-non-answer behavior: stay quiet
+            # so Cursor's built-in fallback runs.
+            if not isinstance(decision, dict) or decision.get("decision") != "answer":
+                return
+            # If Cursor ever surfaces an AskUserQuestion-style hook, the
+            # answers shape will need to be confirmed against the
+            # actual contract. For now, emit a generic allow with the
+            # answers attached — best-effort.
+            answers = decision.get("answers") or {}
+            merged = dict(tool_input) if isinstance(tool_input, dict) else {}
+            merged["answers"] = answers
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "updatedInput": merged,
+                }
+            }, ensure_ascii=False), flush=True)
 
-        # Qoder is assumed to share Claude's PermissionRequest/PreToolUse
-        # contract for now; step 8 will validate against the real Qoder
-        # client and split this into emit_qoder_* if anything diverges.
         DIALECTS = {
             "claude": {"permission": emit_claude_permission, "question": emit_claude_question},
             "qoder":  {"permission": emit_claude_permission, "question": emit_claude_question},
@@ -1065,6 +1109,49 @@ enum ClaudePermissionHook {
                 return text, True
             return text, False
 
+        def write_cursor_reminder(payload, provider_id, source_event):
+            # Fire-and-forget reminder for Cursor's `before*` events when
+            # the host is about to surface its own sandbox dialog. SC's
+            # popup shows alongside Cursor's IDE dialog (kind=approval,
+            # supportsExternalApproval=false → "回到 Cursor" focus button).
+            # No response is read; SC's poll surfaces the popup and the
+            # 1h staleness sweep cleans up orphans.
+            ensure_dirs()
+            session_id = str(payload.get("session_id") or "")
+            cwd = str(payload.get("cwd") or os.getcwd())
+            tool_input = payload.get("tool_input") or {}
+            now = time.time()
+            seed = "cursor-approval|{}|{}".format(session_id or "anon", now)
+            request_id = "cursor-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+            request_path = os.path.join(PENDING, "{}.json".format(request_id))
+            tool_label = {
+                "beforeShellExecution": "Shell",
+                "beforeMCPExecution": "MCP",
+                "beforeReadFile": "ReadFile",
+            }.get(source_event, "Cursor Tool")
+            summary = stable_summary({"tool_name": tool_label, "tool_input": tool_input})
+            match_value = extract_match_value({"tool_name": tool_label, "tool_input": tool_input})
+            request = {
+                "id": request_id,
+                "schemaVersion": SCHEMA_VERSION,
+                "providerId": provider_id,
+                "kind": "approval",
+                "sessionId": session_id,
+                "toolName": tool_label,
+                "projectPath": cwd,
+                "summary": summary,
+                "matchValue": match_value,
+                "receivedAt": now,
+            }
+            serialized, truncated = serialize_tool_input(tool_input)
+            if serialized is not None:
+                request["toolInputJSON"] = serialized
+                request["toolInputTruncated"] = truncated
+            tmp = request_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(request, f, ensure_ascii=False, indent=2, sort_keys=True)
+            os.replace(tmp, request_path)
+
         def write_stop_request(payload, provider_id):
             # Stop hook is fire-and-forget: write the pending file, exit 0.
             # No response is ever read. Swift's poll loop surfaces the toast
@@ -1113,25 +1200,57 @@ enum ClaudePermissionHook {
         def main():
             ensure_dirs()
             provider_id = parse_provider_arg(sys.argv)
+            debug_log("INVOKED argv=" + " ".join(sys.argv) + " provider=" + provider_id)
             if provider_id not in DIALECTS:
-                # Unknown provider — warn to stderr and fall back fully so
-                # both the on-disk providerId and the stdout dialect stay
-                # consistent. Cursor is a recognized provider with stub
-                # emitters, so it does not hit this branch.
                 sys.stderr.write("[session-cove] unknown provider '{}', falling back to claude\\n".format(provider_id))
                 provider_id = "claude"
 
             raw = sys.stdin.read()
             if not raw.strip():
+                debug_log("empty stdin, exiting 0")
                 return 0
+            # Dump first 500 chars of raw stdin so we can see exactly what
+            # the host (Cursor / Claude / Qoder) is feeding us.
+            debug_log("STDIN: " + raw[:500].replace("\\n", " "))
             try:
                 payload = json.loads(raw)
-            except Exception:
+            except Exception as e:
+                debug_log("JSON parse error: " + str(e))
                 return 0
 
             event_name = payload.get("hook_event_name")
+            debug_log("event=" + str(event_name) + " tool=" + str(payload.get("tool_name","")) + " session=" + str(payload.get("session_id",""))[:16])
             tool_name = str(payload.get("tool_name") or "")
             is_question_tool = tool_name in ("AskUserQuestion", "AskFollowupQuestion")
+            # Cursor event mapping. `stop` becomes our Stop completion
+            # toast; the `before*` family is approximated as "approval
+            # required" by reading the payload's `tool_input.sandbox`
+            # boolean, which Cursor sets only when the IDE intends to
+            # surface its own sandbox dialog. Auto-allowed tool calls
+            # (sandbox=false) get a silent allow without a popup so SC
+            # doesn't fire on every routine tool invocation.
+            if event_name == "stop":
+                event_name = "Stop"
+            elif event_name == "preToolUse":
+                # Stale hooks.json entry from a previous SC version that
+                # subscribed to preToolUse. Exit silently — preToolUse
+                # `ask` is documented as not-enforced anyway, so even if
+                # we tried to surface the dialog Cursor would ignore it.
+                return 0
+            elif event_name in ("beforeShellExecution", "beforeMCPExecution", "beforeReadFile"):
+                cursor_tool_input = payload.get("tool_input") or {}
+                will_surface_dialog = bool(cursor_tool_input.get("sandbox")) if isinstance(cursor_tool_input, dict) else False
+                if will_surface_dialog:
+                    # Cursor will pop its own sandbox dialog; mirror with
+                    # an SC reminder + emit `permission: ask` so Cursor's
+                    # dialog drives the actual decision. SC popup is a
+                    # focus-button reminder, not a decision pipeline.
+                    write_cursor_reminder(payload, provider_id, event_name)
+                    print('{"permission":"ask"}', flush=True)
+                else:
+                    # Auto-allow path: don't surface SC; let Cursor proceed.
+                    print('{"permission":"allow"}', flush=True)
+                return 0
             # Three events feed Session Cove: legacy PermissionRequest
             # (yes/deny/always), PreToolUse for AskUserQuestion-style typed
             # answers, and Stop for "session finished a turn" toasts.

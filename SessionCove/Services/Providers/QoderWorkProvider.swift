@@ -14,13 +14,19 @@ import Foundation
 struct QoderWorkProvider: AgentProvider {
     let id: String = "qoderwork"
     let displayName: String = "QoderWork"
-    let processBinaryNames: [String] = ["qoderwork"]
+    let processBinaryNames: [String] = [
+        "qoderwork", "QoderWork", "QoderWork Helper", "QoderWork Helper (Plugin)"
+    ]
 
     var transcriptRoot: URL {
         FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent(".qoderwork/projects", isDirectory: true)
     }
+
+    /// Mirror QoderProvider — sessions live at the project root or under a
+    /// `transcript/` subdirectory depending on QoderWork version.
+    let transcriptSubpaths: [String] = ["", "transcript"]
 
     var settingsPath: URL? {
         FileManager.default
@@ -41,4 +47,11 @@ struct QoderWorkProvider: AgentProvider {
         completionTitle: "任务完成",
         askQuestionTitle: "Question from QoderWork"
     )
+
+    /// /Applications/QoderWork.app uses bundle id `com.qoder.work`.
+    let bundleIdentifier: String? = "com.qoder.work"
+
+    /// Same IDE-internal sandbox dialog as Qoder — hook responses do not
+    /// drive the decision. Surface a focus button instead of approve/deny.
+    let supportsExternalApproval: Bool = false
 }

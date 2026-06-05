@@ -68,12 +68,25 @@ struct MapProjectIslandNode: View {
                     }
                 }
 
-                Text(island.displayName)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(isSelected ? 1.0 : 0.72))
-                    .lineLimit(1)
-                    .padding(.top, 2)
-                    .shadow(color: isSelected ? Color(red: 0.4, green: 0.9, blue: 1.0).opacity(0.8) : .clear, radius: 4)
+                HStack(spacing: 4) {
+                    if let badge = providerBadge {
+                        Text(badge.label)
+                            .font(.system(size: 7, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(badge.foreground)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(
+                                Capsule().fill(badge.background)
+                                    .overlay(Capsule().stroke(badge.foreground.opacity(0.45), lineWidth: 0.5))
+                            )
+                    }
+                    Text(island.displayName)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(isSelected ? 1.0 : 0.72))
+                        .lineLimit(1)
+                        .shadow(color: isSelected ? Color(red: 0.4, green: 0.9, blue: 1.0).opacity(0.8) : .clear, radius: 4)
+                }
+                .padding(.top, 2)
             }
             .scaleEffect(compact ? 1.0 : (isHovered ? 1.12 : (isSelected ? 1.22 : 1.0)))
             .animation(compact ? nil : .interpolatingSpring(stiffness: 200, damping: 8), value: isSelected)
@@ -227,6 +240,26 @@ struct MapProjectIslandNode: View {
         if island.activeCount > 0 { return .working }
         if island.recentCount > 0 { return .idle }
         return .sleeping
+    }
+
+    /// Small text chip rendered next to the island display name when the
+    /// project belongs to a non-Claude provider. Helps users tell apart
+    /// Claude/Qoder/Cursor sessions in the harbor map. nil for Claude
+    /// (no badge — keeps the existing visual unchanged for default users).
+    private var providerBadge: (label: String, foreground: Color, background: Color)? {
+        switch island.providerId {
+        case "qoder":
+            return ("QO", Color(red: 0.94, green: 0.62, blue: 0.30),
+                    Color(red: 0.94, green: 0.62, blue: 0.30).opacity(0.18))
+        case "qoderwork":
+            return ("QW", Color(red: 0.92, green: 0.70, blue: 0.20),
+                    Color(red: 0.92, green: 0.70, blue: 0.20).opacity(0.18))
+        case "cursor":
+            return ("CU", Color(red: 0.55, green: 0.78, blue: 0.98),
+                    Color(red: 0.55, green: 0.78, blue: 0.98).opacity(0.18))
+        default:
+            return nil
+        }
     }
 
     private var islandMood: IslandMood {

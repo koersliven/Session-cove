@@ -17,13 +17,22 @@ import Foundation
 struct QoderProvider: AgentProvider {
     let id: String = "qoder"
     let displayName: String = "Qoder"
-    let processBinaryNames: [String] = ["qoder"]
+    /// Qoder is shipped as a macOS Electron IDE — its main process is named
+    /// `Qoder` (not lowercase `qoder` like a CLI). Including both spellings
+    /// keeps `ProcessDetector` matching whether the user runs Qoder.app or
+    /// a future qoder CLI.
+    let processBinaryNames: [String] = ["qoder", "Qoder", "Qoder Helper", "Qoder Helper (Plugin)"]
 
     var transcriptRoot: URL {
         FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent(".qoder/projects", isDirectory: true)
     }
+
+    /// Qoder writes new sessions under `<project>/transcript/<id>.jsonl` but
+    /// older sessions live at `<project>/<id>.jsonl`. Scan both so the harbor
+    /// map shows the user's complete history.
+    let transcriptSubpaths: [String] = ["", "transcript"]
 
     var settingsPath: URL? {
         FileManager.default
@@ -44,4 +53,16 @@ struct QoderProvider: AgentProvider {
         completionTitle: "任务完成",
         askQuestionTitle: "Question from Qoder"
     )
+
+    /// Qoder ships as a GUI Electron IDE; its bundle id is registered in
+    /// /Applications/Qoder.app/Contents/Info.plist.
+    let bundleIdentifier: String? = "com.qoder.ide"
+
+    /// Qoder's "Run in sandbox" dialog is rendered by the IDE itself and
+    /// does NOT respect PermissionRequest hook stdout decisions — verified
+    /// empirically (we emit allow, the IDE still waits for an in-app
+    /// click). Surface a "回到 Qoder" focus button instead of the
+    /// approve/deny trio so the user knows the SC popup is a reminder,
+    /// not an actual decision pipeline.
+    let supportsExternalApproval: Bool = false
 }

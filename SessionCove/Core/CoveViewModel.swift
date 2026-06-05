@@ -48,6 +48,14 @@ final class CoveViewModel: @unchecked Sendable {
     /// height so the panel can grow from 72→240. Reset to false whenever
     /// `pendingHookRequest.id` changes.
     var approvalExpanded: Bool = false
+
+    /// Transient pet micro-action overlay (blink / sip / bubble / celebrate)
+    /// scheduled by `petBehaviorTask` while the agent is working. `nil`
+    /// when no micro-action is active, in which case `PetMascotView`
+    /// falls back to `working` / `idle` / `sleeping`. Higher-priority
+    /// states (`attention`, `dragged`) bypass this entirely — see
+    /// `PetMascotView.mascotState`.
+    var currentPetMicroState: PixelMascotState?
     private var modeBeforeInterruption: CoveUIMode?
 
     private var watcher: SessionWatcher?
@@ -55,6 +63,12 @@ final class CoveViewModel: @unchecked Sendable {
     private var hookPollTask: Task<Void, Never>?
     private var collapseTimer: Task<Void, Never>?
     private var completionDismissTimer: Task<Void, Never>?
+    /// Background scheduler that fires occasional pet micro-actions
+    /// (blink / sip / bubble) while the agent is working. Started on
+    /// `initialScan`; cancelled on `teardown` (via stopHookPolling chain).
+    private var petBehaviorTask: Task<Void, Never>?
+    /// Transient celebrate-clear timer; runs once per completion event.
+    private var petCelebrateTask: Task<Void, Never>?
 
     /// Invoked when the user finishes dragging the pet mascot.
     /// Window controller injects this on init to persist the new anchor without
@@ -94,7 +108,11 @@ final class CoveViewModel: @unchecked Sendable {
             let hasDetail = (pendingHookRequest?.toolInputJSON?.isEmpty == false)
             return (approvalExpanded && hasDetail) ? 240 : 72
         case .question: return 360
-        case .completion: return 120
+        // Completion toast is a 32pt mascot + 3-line text vstack +
+        // 2 buttons inside ~16pt of vertical padding. 80pt is enough
+        // to seat all of that without the giant top/bottom margins
+        // 120pt was producing.
+        case .completion: return 80
         }
     }
 
@@ -109,6 +127,18 @@ final class CoveViewModel: @unchecked Sendable {
     var attentionIsland: ProjectIsland? {
         guard let pendingHookRequest else { return nil }
         return islands.first { $0.path == pendingHookRequest.projectPath }
+    }
+
+    /// Provider id whose mascot the pet should currently render. The pet
+    /// stays as the default Claude octopus during normal idle/working
+    /// states — its identity is "Session Cove's mascot", not "the mascot
+    /// of whichever framework is busy in the background". Only when a
+    /// popup actually surfaces (`pendingHookRequest != nil`) and that
+    /// request originates from a non-Claude provider do we swap to the
+    /// provider-specific art, so the user immediately sees that the
+    /// alert came from Qoder or Cursor rather than from Claude Code.
+    var activePetProviderId: String {
+        pendingHookRequest?.providerId ?? "claude"
     }
 
     var representativeIsland: ProjectIsland? {
@@ -141,6 +171,82 @@ final class CoveViewModel: @unchecked Sendable {
         await refresh()
         startWatching()
         startPeriodicRefresh()
+        startPetBehavior()
+    }
+
+    /// Pet ambient micro-action scheduler. Cycles every 8-18 seconds while
+    /// at least one session is active; picks blink / sip / bubble at
+    /// random and clears after 0.8-1.6s. Skipped while the user is in a
+    /// pending permission flow (`pendingHookRequest != nil`) or while
+    /// celebrate is already burning. The task cancels itself on
+    /// `stopPetBehavior` (called from `teardown`).
+    private func startPetBehavior() {
+        petBehaviorTask?.cancel()
+        petBehaviorTask = Task { @MainActor [weak self] in
+            // First idle wait keeps the very-first window after launch
+            // calm — avoids a blink hitting before the panel even
+            // settles. 6 seconds matches the harbor map's settle window.
+            try? await Task.sleep(for: .seconds(6))
+            while !Task.isCancelled {
+                guard let self else { return }
+                // Sleep a randomized cool-down regardless of scheduling
+                // outcome so we don't spin on `continue` paths.
+                let coolDown = Double.random(in: 8.0...18.0)
+                try? await Task.sleep(for: .seconds(coolDown))
+                if Task.isCancelled { return }
+                guard self.shouldFirePetMicroAction() else { continue }
+                // Pick a flavor — bubble/sip rare-er than blink so the
+                // pet doesn't spam either. ~60% blink, 25% sip, 15% bubble.
+                let r = Double.random(in: 0..<1)
+                let pick: PixelMascotState =
+                    r < 0.60 ? .petBlink :
+                    r < 0.85 ? .petSip :
+                               .petBubble
+                self.currentPetMicroState = pick
+                let dur = Double.random(in: 0.9...1.6)
+                try? await Task.sleep(for: .seconds(dur))
+                if Task.isCancelled { return }
+                // Clear only if no higher-priority state took over
+                // mid-flight (e.g. celebrate from a Stop hook).
+                if self.currentPetMicroState == pick {
+                    self.currentPetMicroState = nil
+                }
+            }
+        }
+    }
+
+    private func stopPetBehavior() {
+        petBehaviorTask?.cancel()
+        petBehaviorTask = nil
+        petCelebrateTask?.cancel()
+        petCelebrateTask = nil
+        currentPetMicroState = nil
+    }
+
+    /// Gate predicate: don't fire micro-actions while approval/question
+    /// popups are active (the user is busy reading), and don't fire
+    /// when no agent is actually working — `idle` and `sleeping` mascots
+    /// stay still on purpose. Celebrate is allowed regardless of working
+    /// state since it's tied to a Stop event.
+    private func shouldFirePetMicroAction() -> Bool {
+        if pendingHookRequest != nil { return false }
+        if currentPetMicroState == .petCelebrate { return false }
+        return activeSessions > 0
+    }
+
+    /// Trigger a one-shot celebrate pulse. Called when a completion
+    /// (Stop hook) request lands so the pet acknowledges task completion
+    /// even if the user has the toast-suppress setting on.
+    private func triggerPetCelebrate() {
+        petCelebrateTask?.cancel()
+        currentPetMicroState = .petCelebrate
+        petCelebrateTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1.6))
+            guard !Task.isCancelled, let self else { return }
+            if self.currentPetMicroState == .petCelebrate {
+                self.currentPetMicroState = nil
+            }
+        }
     }
 
     @MainActor
@@ -430,9 +536,11 @@ final class CoveViewModel: @unchecked Sendable {
         }
     }
 
+    @MainActor
     func stopHookPolling() {
         hookPollTask?.cancel()
         hookPollTask = nil
+        stopPetBehavior()
     }
 
     func back() {
@@ -508,9 +616,12 @@ final class CoveViewModel: @unchecked Sendable {
 
             // "Don't notify when I'm already in the terminal" — if the
             // user has a terminal frontmost, they'll see the result in
-            // their own session and don't need a popup. Quietly resolve
-            // the request so the pending file is cleaned up; auto-dismiss
-            // timer won't be needed since we're not surfacing the toast.
+            // their own session and don't need a popup. ONLY applies to
+            // Claude (CLI-in-terminal): the user literally sees the
+            // result on screen. Non-Claude providers (Qoder/Cursor) live
+            // in their own IDE — terminal being frontmost doesn't mean
+            // the user saw the IDE's completion. So we always surface
+            // the toast for non-Claude providers.
             //
             // Mock completion requests (id prefixed `stop-mock-`) bypass
             // this — the Debug menu must always render the toast for
@@ -519,6 +630,7 @@ final class CoveViewModel: @unchecked Sendable {
             let isMockCompletion = request.id.hasPrefix("stop-mock-")
             let suppressByTerminal: Bool = {
                 guard isCompletion, !isMockCompletion else { return false }
+                guard request.providerId == "claude" else { return false }
                 let prefersSilence = MainActor.assumeIsolated {
                     CoveSettings.shared.silenceCompletionWhenTerminalFrontmost
                 }
@@ -558,6 +670,11 @@ final class CoveViewModel: @unchecked Sendable {
             // by id; if a fresher request lands first, the early `cancel`
             // above already invalidated this one's hook.
             if isCompletion {
+                // Pet celebrate pulse on completion regardless of whether
+                // we surface the toast (terminal-frontmost suppression
+                // can swallow the popup; the pet animation is gentler
+                // and still acknowledges the win).
+                triggerPetCelebrate()
                 let targetID = request.id
                 completionDismissTimer = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .seconds(30))

@@ -14,9 +14,13 @@ enum SessionParser {
     ///
     ///   * `"cursor"` → `CursorTranscriptParser.parse(...)` (role/content
     ///     parts shape, no permission-mode header, no ai-title).
-    ///   * everything else → the Claude-shaped decoder below (used for
-    ///     Claude / Qoder / QoderWork — they all use the same JSONL
-    ///     schema with `permission-mode` + `user` + `ai-title` lines).
+    ///   * `"qoder"` / `"qoderwork"` → `parseQoder(...)` — Qoder writes a
+    ///     `session_meta` header line carrying sessionId/cwd/timestamp,
+    ///     followed by `progress`/`user`/`assistant` lines whose `data`
+    ///     is null for user/assistant. We extract the metadata line and
+    ///     fall back to filename-derived sessionId if absent.
+    ///   * `"claude"` → the original decoder below (`permission-mode` +
+    ///     `user` + `ai-title` lines).
     static func parse(
         filePath: String,
         projectDirEncoded: String,
@@ -26,6 +30,13 @@ enum SessionParser {
             return CursorTranscriptParser.parse(
                 filePath: filePath,
                 projectDirEncoded: projectDirEncoded
+            )
+        }
+        if providerId == "qoder" || providerId == "qoderwork" {
+            return parseQoder(
+                filePath: filePath,
+                projectDirEncoded: projectDirEncoded,
+                providerId: providerId
             )
         }
         let url = URL(fileURLWithPath: filePath)
@@ -171,5 +182,100 @@ enum SessionParser {
         }
         path = path.replacingOccurrences(of: "-", with: "/")
         return path
+    }
+
+    // MARK: - Qoder dialect
+
+    /// Qoder/QoderWork transcript schema:
+    ///   line 0: {type:"session_meta", sessionId, uuid, timestamp, cwd, data:{...}}
+    ///   line N: {type:"progress", data:{command, hookEvent, hookName, type}}
+    ///   line N: {type:"user"|"assistant", data:null}
+    ///
+    /// User/assistant content lives in subsequent encoded fields we don't
+    /// have a fixed shape for yet; for v1 we grab metadata from session_meta
+    /// and the first non-null user/assistant line for `firstMessage` if
+    /// possible. lastModified comes from the file's mtime.
+    private static func parseQoder(
+        filePath: String,
+        projectDirEncoded: String,
+        providerId: String
+    ) -> SessionRecord? {
+        let url = URL(fileURLWithPath: filePath)
+        let fileManager = FileManager.default
+
+        guard let attrs = try? fileManager.attributesOfItem(atPath: filePath),
+              let modDate = attrs[.modificationDate] as? Date else {
+            return nil
+        }
+
+        let cacheKey = "\(providerId)|\(filePath)"
+        if let cached = cache[cacheKey], cached.modDate == modDate {
+            return cached.record
+        }
+
+        guard let handle = FileHandle(forReadingAtPath: filePath) else { return nil }
+        defer { handle.closeFile() }
+
+        let headerData = handle.readData(ofLength: 8192)
+        guard !headerData.isEmpty,
+              let headerString = String(data: headerData, encoding: .utf8) else {
+            return nil
+        }
+        let headerLines = headerString.components(separatedBy: "\n").filter { !$0.isEmpty }
+
+        // Default to filename-derived sessionId so a malformed session_meta
+        // line still produces a usable record.
+        var sessionId = url.deletingPathExtension().lastPathComponent
+        // Qoder filenames sometimes include a "-session" suffix (companion
+        // sidecar files we don't want to confuse with the real transcript)
+        // — the SessionScanner already filters by .jsonl extension; here we
+        // just trim the suffix if it slipped through.
+        if sessionId.hasSuffix("-session") {
+            sessionId = String(sessionId.dropLast("-session".count))
+        }
+
+        var cwd: String?
+        var timestamp: Date?
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoFormatterNoFraction = ISO8601DateFormatter()
+
+        for line in headerLines.prefix(20) {
+            guard let data = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            if json["type"] as? String == "session_meta" {
+                if let sid = json["sessionId"] as? String, !sid.isEmpty {
+                    sessionId = sid
+                }
+                if let c = json["cwd"] as? String, !c.isEmpty {
+                    cwd = c
+                }
+                if let ts = json["timestamp"] as? String {
+                    timestamp = isoFormatter.date(from: ts) ?? isoFormatterNoFraction.date(from: ts)
+                }
+                break
+            }
+        }
+
+        let projectPath = cwd ?? decodeProjectPath(projectDirEncoded)
+
+        let record = SessionRecord(
+            id: sessionId,
+            providerId: providerId,
+            projectDirEncoded: projectDirEncoded,
+            projectPath: projectPath,
+            jsonlPath: filePath,
+            firstUserMessage: nil,
+            aiTitle: nil,
+            timestamp: timestamp,
+            lastModified: modDate,
+            version: nil,
+            gitBranch: nil,
+            status: .archived
+        )
+        cache[cacheKey] = (modDate, record)
+        return record
     }
 }

@@ -73,9 +73,14 @@ final class PetPlacementStrategy {
         for frameSize: CoveFrameSize,
         currentPanelOrigin: NSPoint,
         screenFrame: NSRect,
-        pingHeightOverride: CGFloat? = nil
+        pingHeightOverride: CGFloat? = nil,
+        pingCardWidthOverride: CGFloat? = nil
     ) -> (frame: NSRect, pingDirection: HorizontalEdge?) {
-        let newSize = size(for: frameSize, pingHeightOverride: pingHeightOverride)
+        let newSize = size(
+            for: frameSize,
+            pingHeightOverride: pingHeightOverride,
+            pingCardWidthOverride: pingCardWidthOverride
+        )
 
         switch frameSize {
         case .pet:
@@ -148,13 +153,21 @@ final class PetPlacementStrategy {
         )
     }
 
-    private func size(for frameSize: CoveFrameSize, pingHeightOverride: CGFloat? = nil) -> NSSize {
+    private func size(
+        for frameSize: CoveFrameSize,
+        pingHeightOverride: CGFloat? = nil,
+        pingCardWidthOverride: CGFloat? = nil
+    ) -> NSSize {
         switch frameSize {
-        case .pet:      Self.petSize
-        case .compact:  NSSize(width: 300, height: 50)
-        case .ping:     NSSize(width: Self.petSize.width + Self.pingCardWidth,
-                                height: pingHeightOverride ?? Self.pingHeight)
-        case .expanded: NSSize(width: 520, height: 480)
+        case .pet:      return Self.petSize
+        case .compact:  return NSSize(width: 300, height: 50)
+        case .ping:
+            let cardW = pingCardWidthOverride ?? Self.pingCardWidth
+            return NSSize(
+                width: Self.petSize.width + cardW,
+                height: pingHeightOverride ?? Self.pingHeight
+            )
+        case .expanded: return NSSize(width: 520, height: 480)
         }
     }
 

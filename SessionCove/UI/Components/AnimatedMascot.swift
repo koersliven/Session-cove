@@ -32,6 +32,14 @@ struct AnimatedMascot: View {
             return CGFloat(sin(time * .pi * 7) * 2.0)
         case .dragged:
             return 0
+        case .petBlink:
+            return CGFloat(sin(time * .pi * 1.4) * 0.6)
+        case .petSip:
+            return CGFloat(sin(time * .pi * 2.2) * 0.8)
+        case .petBubble:
+            return CGFloat(sin(time * .pi * 2.6) * 1.2)
+        case .petCelebrate:
+            return CGFloat(abs(sin(time * .pi * 6)) * 2.0)
         }
     }
 }

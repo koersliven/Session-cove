@@ -70,11 +70,28 @@ enum CursorHooksMerger {
     /// with user scripts in practice.
     static let ownershipMarker = "session_cove_claude_hook.py"
 
-    /// Cursor event names that Session Cove subscribes to. Step 9 only
-    /// targets `stop` (the rough analogue of Claude's session-end hook);
-    /// later steps may add `sessionStart` once the lifecycle wiring is
-    /// designed.
-    static let subscribedEvents: [String] = ["stop"]
+    /// Events Session Cove subscribes to in Cursor's hook chain.
+    ///
+    /// - `stop` — turn-completion toast (mirrors Claude Stop, fire-and-forget).
+    /// - `beforeShellExecution` / `beforeMCPExecution` / `beforeReadFile`
+    ///   — approval-equivalent surfaces. Cursor fires these on EVERY
+    ///   tool invocation (auto-allow or sandbox), but the payload's
+    ///   `tool_input.sandbox` boolean tells us which case we're in:
+    ///     * `sandbox=true` (or `block_at_threshold=true`) → Cursor will
+    ///       surface its own dialog; SC writes a pending reminder so the
+    ///       popup appears alongside, and emits `permission: "ask"` to
+    ///       let Cursor's dialog drive the actual decision.
+    ///     * `sandbox=false` → Cursor auto-allows; SC stays silent and
+    ///       emits `permission: "allow"` so the hook chain continues.
+    /// `preToolUse` is intentionally NOT subscribed — its `"ask"` return
+    /// is documented as "accepted by the schema but not enforced",
+    /// making it useless for surfacing approval flow.
+    static let subscribedEvents: [String] = [
+        "stop",
+        "beforeShellExecution",
+        "beforeMCPExecution",
+        "beforeReadFile",
+    ]
 
     /// Merge `sessionCoveCommand` into `existing`. The returned dict has:
     ///
@@ -93,9 +110,18 @@ enum CursorHooksMerger {
     ) -> [String: Any] {
         var result = existing
 
+        // `timeout` is critical: without it Cursor uses an internal
+        // default that empirically does NOT wait for our stdout decision
+        // long enough — the agent appears to "ignore" our allow/deny and
+        // hang. The working r2c hook in the wild sets timeout=10 on its
+        // before* / preToolUse / postToolUse entries, so we mirror that
+        // floor. Long enough to absorb a normal SC popup decision (a few
+        // hundred ms once the user clicks) but short enough that a
+        // genuinely stuck SC won't dead-lock the agent.
         let ourEntry: [String: Any] = [
             "type": "command",
-            "command": sessionCoveCommand
+            "command": sessionCoveCommand,
+            "timeout": 60
         ]
 
         for event in subscribedEvents {

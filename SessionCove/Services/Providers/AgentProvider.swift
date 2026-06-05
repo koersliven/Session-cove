@@ -45,6 +45,13 @@ protocol AgentProvider: Sendable {
     /// equivalent). `SessionScanner` walks this tree to enumerate sessions.
     var transcriptRoot: URL { get }
 
+    /// Sub-paths under each project directory where transcript JSONL files
+    /// actually live. Default `[""]` (Claude shape: `<root>/<project>/<id>.jsonl`).
+    /// Qoder uses `["", "transcript"]` because newer sessions land under a
+    /// `transcript/` subdirectory while legacy sessions sit at the project
+    /// root — both must be discovered.
+    var transcriptSubpaths: [String] { get }
+
     /// Settings file used by the framework's hook system, if any.
     /// `nil` when the framework does not expose hooks.
     var settingsPath: URL? { get }
@@ -57,4 +64,34 @@ protocol AgentProvider: Sendable {
 
     /// UI copy / asset hints for this provider.
     var ui: UIAffordances { get }
+
+    /// Bundle identifier of the host macOS app (Electron IDE, etc.) when
+    /// this provider lives inside a GUI app rather than a CLI. Used by
+    /// the "open in <provider>" button to bring the IDE window to the
+    /// foreground via `NSRunningApplication.activate`. `nil` for CLI
+    /// agents (Claude Code) where focus is owned by the user's terminal.
+    var bundleIdentifier: String? { get }
+
+    /// True when the provider's PermissionRequest hook actually consumes
+    /// our stdout decision (i.e. emitting `permissionDecision: allow`
+    /// causes the agent to proceed). Claude Code = true; Qoder/Cursor =
+    /// false because their sandbox dialogs are IDE-internal and ignore
+    /// hook responses. The approval ping card uses this to decide
+    /// whether to show 拒绝/始终允许/允许 buttons (true) or a single
+    /// "打开 <provider>" focus button (false).
+    var supportsExternalApproval: Bool { get }
+}
+
+extension AgentProvider {
+    /// Most providers (Claude, Cursor) drop transcripts directly under each
+    /// project directory. Qoder/QoderWork override to add `"transcript"`.
+    var transcriptSubpaths: [String] { [""] }
+
+    /// Default: no GUI host (CLI-only providers like Claude).
+    var bundleIdentifier: String? { nil }
+
+    /// Default: assume the agent honors hook stdout decisions, like
+    /// Claude Code does. IDE-hosted agents that rely on internal sandbox
+    /// dialogs (Qoder, Cursor) override to false.
+    var supportsExternalApproval: Bool { true }
 }

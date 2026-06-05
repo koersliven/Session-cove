@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Toast card shown when a Claude session finishes a turn (Stop hook).
 /// Same 388pt-wide envelope as `PermissionPingCard` but taller (120pt) and
@@ -32,10 +33,20 @@ struct CompletionPingCard: View {
     }
 
     private var canOpenSession: Bool {
-        // We can always launchNew given a non-empty projectPath; the button
-        // only collapses when both are missing (unlikely for real Stop events).
+        // Claude path: SessionResumer can locate the live tty via `ps`
+        // and focus the terminal. Required: project path or session id
+        // to drive the lookup.
+        guard request.providerId == "claude" else { return false }
         if let sid = request.sessionId, !sid.isEmpty { return true }
         return !request.projectPath.isEmpty
+    }
+
+    /// IDE-hosted providers (Qoder/Cursor) can't be tty-resumed but we
+    /// can still bring their app window to the foreground via
+    /// NSRunningApplication.activate so the user lands in the right
+    /// place. The provider exposes `bundleIdentifier` for this lookup.
+    private var canFocusIDE: Bool {
+        request.providerId != "claude"
     }
 
     var body: some View {
@@ -48,7 +59,11 @@ struct CompletionPingCard: View {
             AgentProviderRegistry.shared.provider(for: request)
         }
         return HStack(spacing: 10) {
-            CoveMascotView(state: .idle, scale: .row)
+            CoveMascotView(
+                state: .idle,
+                scale: .row,
+                providerPrefix: request.providerId
+            )
                 .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -74,6 +89,8 @@ struct CompletionPingCard: View {
                 button(.acknowledge, style: .quiet)
                 if canOpenSession {
                     button(.openSession, style: .blue)
+                } else if canFocusIDE {
+                    focusIDEButton(provider: provider)
                 }
             }
         }
@@ -87,6 +104,45 @@ struct CompletionPingCard: View {
                         .stroke(PixelPalette.foam.opacity(0.32), lineWidth: 1)
                 )
         )
+    }
+
+    /// Focus button for IDE-hosted providers (Qoder/Cursor). Activates
+    /// the IDE app via NSRunningApplication and dismisses the toast.
+    /// Visually mirrors the `.blue` button so the layout doesn't shift.
+    private func focusIDEButton(provider: any AgentProvider) -> some View {
+        Button {
+            if let bid = provider.bundleIdentifier,
+               let app = NSRunningApplication.runningApplications(
+                withBundleIdentifier: bid
+               ).first {
+                if #available(macOS 14.0, *) {
+                    app.activate()
+                } else {
+                    app.activate(options: [.activateAllWindows])
+                }
+            }
+            onDecision(.acknowledge)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.up.right.square.fill")
+                    .font(.system(size: 9, weight: .bold))
+                Text("回到 \(provider.displayName)")
+                    .font(.system(size: 10, weight: .black, design: .monospaced))
+            }
+            .foregroundStyle(.white.opacity(0.92))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .background(
+                Capsule()
+                    .fill(Color(red: 0.12, green: 0.44, blue: 0.85).opacity(0.86))
+                    .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 1))
+            )
+        }
+        .buttonStyle(.plain)
+        .help("\(provider.displayName) 由 IDE 拥有窗口,点击切回 \(provider.displayName)")
     }
 
     private func button(_ decision: HookApprovalDecision, style: CompletionButtonStyle) -> some View {

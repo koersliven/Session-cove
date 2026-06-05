@@ -7,6 +7,15 @@ enum PixelMascotState: Sendable {
     case sleeping
     case attention
     case dragged
+    /// Pet-mode micro-actions for ambient companionship animations.
+    /// Triggered by `CoveViewModel`'s pet behavior scheduler when the
+    /// agent is working and no higher-priority state (attention / dragged)
+    /// is active. Each action is short-lived (~0.8-1.8s) and yields back
+    /// to whatever the underlying state was.
+    case petBlink
+    case petSip
+    case petBubble
+    case petCelebrate
 }
 
 enum PixelPalette {
@@ -453,7 +462,7 @@ struct PixelOctopusSprite: View {
     static func rows(for state: PixelMascotState) -> [String] {
         switch state {
         case .working, .idle, .attention:
-            [
+            return [
                 "................",
                 ".....BBBBBB.....",
                 "....BHHHHHHB....",
@@ -469,7 +478,7 @@ struct PixelOctopusSprite: View {
                 "................"
             ]
         case .sleeping:
-            [
+            return [
                 "...........Z....",
                 ".....BBBBBB.Z...",
                 "....BHHHHHHB....",
@@ -485,7 +494,7 @@ struct PixelOctopusSprite: View {
                 "................"
             ]
         case .dragged:
-            [
+            return [
                 "................",
                 ".....BBBBBB.....",
                 "....BHHHHHHB....",
@@ -498,6 +507,26 @@ struct PixelOctopusSprite: View {
                 "................",
                 "................",
                 "................",
+                "................"
+            ]
+        case .petBlink, .petSip, .petBubble, .petCelebrate:
+            // Pet micro-actions are rendered from PNG sprites in
+            // CoveMascotView, not from this ASCII grid. This branch
+            // exists to satisfy switch exhaustiveness; if `rows(for:)`
+            // is ever called with a pet state we fall back to working.
+            return [
+                "................",
+                ".....BBBBBB.....",
+                "....BHHHHHHB....",
+                "...BOOOOOOOOB...",
+                "...BOLOOOLOOB...",
+                "...BOOEEOOOB....",
+                "....OOOOOO......",
+                "...DOOOOOOD.....",
+                "..DODODODOD.....",
+                "......MMMM......",
+                "......MSSM......",
+                "......MSSM......",
                 "................"
             ]
         }
