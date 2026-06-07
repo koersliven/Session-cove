@@ -619,26 +619,22 @@ enum ClaudePermissionHook {
         ]
         hooks["PermissionRequest"] = preservedEntries + [newEntry]
 
-        // PreToolUse hook: same script, matcher-restricted to AskUserQuestion /
-        // AskFollowupQuestion so non-question tool calls never reach our
-        // process. The bridgeScript also re-checks `is_question_event` defensively
-        // and exits 0 immediately for anything else.
+        // PreToolUse: SC no longer registers its own entry here.
+        // AskUserQuestion is handled ENTIRELY through the PermissionRequest
+        // hook (which also fires for question tools). Having both caused a
+        // duplicate popup: PreToolUse fired first (before Claude was ready),
+        // showed an early ineffective popup; PermissionRequest fired second
+        // (Claude ready), showed the real popup. Removing PreToolUse
+        // eliminates the duplicate. Clean any leftover SC PreToolUse entries.
         let existingPreToolUse = hooks["PreToolUse"] as? [[String: Any]] ?? []
         let preservedPreToolUse = existingPreToolUse.filter { entry in
             !containsSessionCoveCommand(entry) && !containsPingIslandCommand(entry)
         }
-        let preToolUseEntry: [String: Any] = [
-            "matcher": "AskUserQuestion|AskFollowupQuestion",
-            "hooks": [
-                [
-                    "type": "command",
-                    "command": scriptCommand,
-                    "timeout": 86400,
-                    "statusMessage": "Session Cove is collecting your answer"
-                ]
-            ]
-        ]
-        hooks["PreToolUse"] = preservedPreToolUse + [preToolUseEntry]
+        if preservedPreToolUse.isEmpty {
+            hooks.removeValue(forKey: "PreToolUse")
+        } else {
+            hooks["PreToolUse"] = preservedPreToolUse
+        }
 
         // Stop hook: same script, fire-and-forget. The bridgeScript writes a
         // .completion request and exits 0 immediately — no response file, no
