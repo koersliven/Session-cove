@@ -446,7 +446,17 @@ enum ClaudePermissionHook {
             try? FileManager.default.createDirectory(at: responseDirectory, withIntermediateDirectories: true)
             try? data.write(to: responseDirectory.appendingPathComponent("\(request.id).json"), options: .atomic)
         }
-        try? FileManager.default.removeItem(at: pendingDirectory.appendingPathComponent("\(request.id).json"))
+        // Delete pending AFTER a brief delay so both bridge processes
+        // have time to see the response file before pending disappears.
+        // Without this, bridge B sees "pending gone" in the same poll
+        // tick that bridge A consumed the response, misses the response
+        // (not yet flushed to disk), falls back to allow, and Claude
+        // gets a second hook result → SC re-polls → second popup.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
+            try? FileManager.default.removeItem(
+                at: self.pendingDirectory.appendingPathComponent("\(request.id).json")
+            )
+        }
     }
 
     static func resolve(request: HookPermissionRequest, decision: HookApprovalDecision) throws {
@@ -587,11 +597,11 @@ enum ClaudePermissionHook {
         var root: [String: Any] = existingData.flatMap(HookConfigParser.parseJSONObject(from:)) ?? [:]
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         // Use the exec-wrapper socket bridge (connects to /tmp/session-cove.sock).
-        // This replaces the old file-poll Python script. The wrapper does
-        // `exec python3 session_cove_socket_bridge.py` — same pattern as
-        // Ping Island's bridge wrapper.
+        // NO shellQuoted — the command is spawned directly by Claude, not through
+        // a shell interpreter. Quoting the path with single quotes would make
+        // Claude spawn the literal string including quotes, which fails.
         let bridgeWrapperPath = binDirectory.appendingPathComponent("session-cove-bridge").path
-        let scriptCommand = "\(shellQuoted(bridgeWrapperPath)) --provider \(providerArg)"
+        let scriptCommand = "\(bridgeWrapperPath) --provider \(providerArg)"
 
         let existingEntries = hooks["PermissionRequest"] as? [[String: Any]] ?? []
         let preservedEntries = existingEntries.filter { entry in

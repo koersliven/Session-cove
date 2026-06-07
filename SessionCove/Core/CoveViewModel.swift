@@ -535,21 +535,40 @@ final class CoveViewModel: @unchecked Sendable {
     func startHookPolling() {
         hookPollTask?.cancel()
         hookPollTask = Task { @MainActor [weak self] in
+            // Track recently-resolved request IDs so the poll loop
+            // doesn't re-surface the same pending after resolve writes
+            // the response file but before the delayed pending deletion
+            // fires. Without this, the second bridge process's pending
+            // (same ID) gets re-picked up → duplicate popup.
+            var resolvedIDs: Set<String> = []
+
             while !Task.isCancelled {
                 guard let self else { return }
                 let real = ClaudePermissionHook.pendingRequests().first
                 // UI-injected mocks (Debug menu) are not on disk; the next poll
                 // would return nil and clobber them, causing the popping panel
                 // to vanish in ~500ms. Skip the overwrite when the current
-                // pending is a mock and disk has nothing. Approval/question
-                // mocks use the `mock-` id prefix; completion mocks use
-                // `stop-mock-` to mimic real Stop event ids — both must be
-                // protected.
+                // pending is a mock and disk has nothing.
                 let currentID = self.pendingHookRequest?.id ?? ""
                 let currentIsMock = currentID.hasPrefix("mock-") || currentID.hasPrefix("stop-mock-")
                 if real == nil && currentIsMock {
                     try? await Task.sleep(for: .milliseconds(500))
                     continue
+                }
+                // Skip already-resolved IDs (prevents duplicate popup)
+                if let real, resolvedIDs.contains(real.id) {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    continue
+                }
+                // Track when a request transitions from active → nil (resolved)
+                if real == nil, !currentID.isEmpty, !currentIsMock {
+                    resolvedIDs.insert(currentID)
+                    // Clean old entries after 30s to avoid unbounded growth
+                    let expiredID = currentID
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(30))
+                        resolvedIDs.remove(expiredID)
+                    }
                 }
                 self.updatePendingHookRequest(real)
                 try? await Task.sleep(for: .milliseconds(500))

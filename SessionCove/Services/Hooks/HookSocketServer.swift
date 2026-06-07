@@ -268,18 +268,13 @@ final class HookSocketServer {
 
         // Build request_id WITHOUT event_name so PreToolUse and PermissionRequest
         // for the same AskUserQuestion share the SAME pending/response file.
-        // Both bridge processes poll the same ID, both see the same answer,
-        // and SC only shows ONE popup (first pending wins; second = duplicate id → skip).
-        let stable: [String: Any] = [
-            "tool_name": toolName,
-            "tool_input": toolInput,
-            "cwd": cwd
-        ]
-        let seed = (try? JSONSerialization.data(withJSONObject: stable, options: .sortedKeys))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        // Include first question text so different questions get different IDs.
+        let firstQuestionText = (toolInput["questions"] as? [[String: Any]])?
+            .first?["question"] as? String ?? ""
+        let seed = "\(toolName)|\(firstQuestionText)|\(cwd)"
         var h: UInt64 = 5381
         for byte in seed.utf8 { h = h &* 33 &+ UInt64(byte) }
-        let requestId = String(format: "%016llx", h)
+        let requestId = String(format: "q-%016llx", h)
 
         let pendingPath = pendingDir.appendingPathComponent("\(requestId).json")
         let responsePath = responseDir.appendingPathComponent("\(requestId).json")
@@ -314,9 +309,35 @@ final class HookSocketServer {
             }
         }
 
-        // Write pending atomically
-        if let data = try? JSONSerialization.data(withJSONObject: pendingData, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: pendingPath, options: .atomic)
+        // Before writing pending: check if this question was already
+        // answered (sibling bridge process got the response first).
+        // PreToolUse + PermissionRequest both fire for AskUserQuestion;
+        // they share the same request ID. If response already exists,
+        // read it directly — no second popup.
+        if FileManager.default.fileExists(atPath: responsePath.path) {
+            if let data = try? Data(contentsOf: responsePath),
+               let decision = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let decisionValue = decision["decision"] as? String ?? "allow"
+                if isQuestionTool && decisionValue == "answer" {
+                    let answers = decision["answers"] as? [String: String] ?? [:]
+                    var merged = toolInput
+                    merged["answers"] = answers
+                    return .updatedInput(eventName: eventName, input: merged)
+                }
+                return decisionValue == "deny"
+                    ? .deny(eventName: eventName)
+                    : .allow(eventName: eventName)
+            }
+        }
+
+        // Write pending ONLY if it doesn't exist yet. The sibling bridge
+        // process (same request ID) may have already written it. If we
+        // overwrite after SC has already resolved it, SC sees a "new"
+        // pending and shows a second popup.
+        if !FileManager.default.fileExists(atPath: pendingPath.path) {
+            if let data = try? JSONSerialization.data(withJSONObject: pendingData, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: pendingPath, options: .atomic)
+            }
         }
 
         // Poll for response (blocking on this background thread)
