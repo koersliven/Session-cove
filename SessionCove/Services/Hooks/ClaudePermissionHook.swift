@@ -657,6 +657,32 @@ enum ClaudePermissionHook {
         ]
         hooks["Stop"] = preservedStop + [stopEntry]
 
+        // Global cleanup: strip ping-island entries from ALL hook events
+        // (not just the three SC manages). Ping Island registers hooks on
+        // Notification, SessionStart, SessionEnd, SubagentStop, PreCompact,
+        // PostToolUse, UserPromptSubmit, etc. These conflict with SC because
+        // both tools fight over settings.json — whichever launches last wins.
+        // SC deliberately takes over to avoid dual-hook race conditions.
+        // Also remove ping-island statusLine (causes "command: undefined"
+        // error when we previously deleted the hooks block without it).
+        for event in hooks.keys {
+            guard var entries = hooks[event] as? [[String: Any]] else { continue }
+            let cleaned = entries.filter { entry in
+                !containsPingIslandCommand(entry)
+            }
+            if cleaned.isEmpty {
+                hooks.removeValue(forKey: event)
+            } else if cleaned.count != entries.count {
+                hooks[event] = cleaned
+            }
+        }
+        // Remove ping-island statusLine if present
+        if let statusLine = root["statusLine"] as? [String: Any],
+           let cmd = statusLine["command"] as? String,
+           cmd.contains("ping-island") || cmd.contains("island-statusline") {
+            root.removeValue(forKey: "statusLine")
+        }
+
         root["hooks"] = hooks
 
         if let existingData, !containsSessionCoveCommandInData(existingData) {
