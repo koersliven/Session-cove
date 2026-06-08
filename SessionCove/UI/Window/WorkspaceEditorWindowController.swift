@@ -17,7 +17,7 @@ final class WorkspaceEditorWindowController: NSWindowController {
         window.title = "New Workspace"
         window.center()
         window.isReleasedWhenClosed = false
-        window.level = .floating
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 4)
         window.hidesOnDeactivate = false
         self.init(window: window)
     }
@@ -54,7 +54,7 @@ final class NewSessionWindowController: NSWindowController {
         window.title = "New Session"
         window.center()
         window.isReleasedWhenClosed = false
-        window.level = .floating
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 4)
         window.hidesOnDeactivate = false
         self.init(window: window)
     }

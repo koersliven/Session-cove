@@ -91,7 +91,7 @@ struct CoveNotchView: View {
                 } else {
                     HarborMapOverviewView(
                         viewModel: viewModel,
-                        showsHeader: false,
+                        showsHeader: viewModel.notchStatus == .opened,
                         compact: viewModel.notchStatus == .peeking,
                         onAnyIslandTap: viewModel.notchStatus == .peeking
                             ? { viewModel.notchStatus = .opened }
@@ -118,7 +118,7 @@ struct CoveNotchView: View {
         switch viewModel.notchStatus {
         case .closed: return 224
         case .peeking: return 480
-        case .opened: return 600
+        case .opened: return 660
         case .popping: return 480
         }
     }
@@ -127,7 +127,7 @@ struct CoveNotchView: View {
         switch viewModel.notchStatus {
         case .closed: return 32
         case .peeking: return 220
-        case .opened: return 480
+        case .opened: return 560
         case .popping:
             // Kind-aware popping height. AdaptiveHeader eats 60pt at the
             // top of the notch in non-closed states, so add that on top
