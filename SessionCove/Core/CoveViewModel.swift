@@ -177,6 +177,7 @@ final class CoveViewModel: @unchecked Sendable {
         startWatching()
         startPeriodicRefresh()
         startPetBehavior()
+        UpdateChecker.shared.start()
     }
 
     /// Pet ambient micro-action scheduler. Cycles every 8-18 seconds while

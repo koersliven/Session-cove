@@ -79,6 +79,13 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 </plist>
 EOF
 
+# Ad-hoc codesign with entitlements (enables network access without Apple Developer ID)
+ENTITLEMENTS="$ROOT_DIR/SessionCove/Resources/SessionCove.entitlements"
+if [ -f "$ENTITLEMENTS" ]; then
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_DIR/Contents/MacOS/$EXECUTABLE" 2>/dev/null || true
+    codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
+fi
+
 echo "✅ App bundle: $APP_DIR"
 if [ "$UNIVERSAL" = "1" ]; then
     echo "   Architectures: $(lipo -archs "$APP_DIR/Contents/MacOS/$EXECUTABLE" 2>/dev/null || echo unknown)"
