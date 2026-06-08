@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import UserNotifications
 
 @MainActor
 final class UpdateChecker: ObservableObject {
@@ -24,11 +25,11 @@ final class UpdateChecker: ObservableObject {
     func start() {
         check()
         timer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) { _ in
-            Task { @MainActor [weak self] in self?.check() }
+            Task { @MainActor [weak self] in self?.check(notify: true) }
         }
     }
 
-    func check() {
+    func check(notify: Bool = false) {
         state = .checking
         dismissed = false
         Task {
@@ -36,6 +37,9 @@ final class UpdateChecker: ObservableObject {
                 let result = try await fetchLatestRelease()
                 if isNewer(remote: result.version, local: currentVersion) {
                     state = .available(version: result.version, dmgURL: result.dmgURL, releaseNotes: result.notes)
+                    if notify {
+                        sendUpdateNotification(version: result.version)
+                    }
                 } else {
                     state = .upToDate
                 }
@@ -43,6 +47,23 @@ final class UpdateChecker: ObservableObject {
                 state = .error(error.localizedDescription)
                 print("[UpdateChecker] check failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func sendUpdateNotification(version: String) {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Session Cove 有新版本"
+            content.body = "v\(version) 可用，打开设置即可更新"
+            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: "session-cove-update-\(version)",
+                content: content,
+                trigger: nil
+            )
+            center.add(request)
         }
     }
 
@@ -85,24 +106,28 @@ final class UpdateChecker: ObservableObject {
     private func installFromDMG(_ dmgPath: URL) throws {
         let appName = "Session Cove"
         let appPath = "/Applications/\(appName).app"
+        let pid = ProcessInfo.processInfo.processIdentifier
 
         // Write an updater script that runs after we quit
         let script = """
         #!/bin/bash
-        # Wait for the app to quit
-        while pgrep -f "SessionCove$" > /dev/null 2>&1; do sleep 0.5; done
+        # Wait for the app (PID \(pid)) to quit
+        while kill -0 \(pid) 2>/dev/null; do sleep 0.3; done
+        sleep 1
         # Mount DMG
-        MOUNT=$(hdiutil attach "\(dmgPath.path)" -nobrowse -quiet -mountrandom /tmp 2>/dev/null | tail -1 | awk '{print $NF}')
+        MOUNT=$(hdiutil attach "\(dmgPath.path)" -nobrowse -mountrandom /tmp 2>/dev/null | tail -1 | awk '{print $NF}')
         if [ -z "$MOUNT" ]; then exit 1; fi
         # Replace app
         rm -rf "\(appPath)"
         cp -R "$MOUNT/\(appName).app" "\(appPath)"
-        # Remove quarantine
-        xattr -dr com.apple.quarantine "\(appPath)" 2>/dev/null
-        # Unmount
+        # Remove ALL quarantine/provenance attributes
+        xattr -cr "\(appPath)" 2>/dev/null
+        # Re-sign ad-hoc
+        codesign --force --deep --sign - "\(appPath)" 2>/dev/null
+        # Unmount + cleanup
         hdiutil detach "$MOUNT" -quiet 2>/dev/null
-        # Clean up DMG
         rm -f "\(dmgPath.path)"
+        sleep 0.5
         # Relaunch
         open "\(appPath)"
         # Self-delete

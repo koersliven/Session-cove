@@ -82,8 +82,10 @@ EOF
 # Ad-hoc codesign with entitlements (enables network access without Apple Developer ID)
 ENTITLEMENTS="$ROOT_DIR/SessionCove/Resources/SessionCove.entitlements"
 if [ -f "$ENTITLEMENTS" ]; then
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_DIR/Contents/MacOS/$EXECUTABLE" 2>/dev/null || true
+    # Sign the bundle first, then re-sign the executable with entitlements
+    # (outer --deep sign can strip entitlements from inner binary)
     codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_DIR/Contents/MacOS/$EXECUTABLE" 2>/dev/null || true
 fi
 
 echo "✅ App bundle: $APP_DIR"
