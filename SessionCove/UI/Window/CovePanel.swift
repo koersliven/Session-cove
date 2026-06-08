@@ -51,7 +51,22 @@ final class CovePanel: NSPanel {
             return
         }
 
-        if event.type == .leftMouseDown || event.type == .rightMouseDown {
+        // Right-click (including trackpad two-finger tap) needs key status
+        // BEFORE super.sendEvent, otherwise SwiftUI's .contextMenu won't fire.
+        if event.type == .rightMouseDown {
+            if let contentView,
+               contentView.hitTest(event.locationInWindow) == nil,
+               let cgEvent = event.cgEvent {
+                MouseEventReplay.mark(cgEvent)
+                cgEvent.post(tap: .cghidEventTap)
+                return
+            }
+            makeKey()
+            super.sendEvent(event)
+            return
+        }
+
+        if event.type == .leftMouseDown {
             if let contentView,
                contentView.hitTest(event.locationInWindow) == nil,
                let cgEvent = event.cgEvent {
@@ -60,16 +75,6 @@ final class CovePanel: NSPanel {
                 cgEvent.post(tap: .cghidEventTap)
                 return
             }
-            // Deliberately NOT calling makeKey() here. With
-            // `nonactivatingPanel` + `isFloatingPanel`, AppKit still routes
-            // mouse-down/up to the hit-tested SwiftUI view (button taps
-            // work without key status). Forcing key status used to steal
-            // the user's keyboard focus from whatever app they were typing
-            // in — the visible symptom: an approval popup appears and the
-            // user "loses" their other app's text input until they decide.
-            // SwiftUI's SecureField / TextField will request key status
-            // themselves on focus, which is the only place we actually
-            // need it.
         }
         super.sendEvent(event)
     }
