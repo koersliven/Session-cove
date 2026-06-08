@@ -46,6 +46,18 @@ struct HarborMapOverviewView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background { PixelOceanBackground() }
+        .alert(
+            "Delete Workspace?",
+            isPresented: Binding(
+                get: { viewModel.pendingWorkspaceDeletion != nil },
+                set: { if !$0 { viewModel.cancelDeleteWorkspace() } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) { viewModel.cancelDeleteWorkspace() }
+            Button("Delete", role: .destructive) { viewModel.confirmDeleteWorkspace() }
+        } message: {
+            Text("The workspace directory and all its sessions will be moved to Trash.")
+        }
     }
 
     // MARK: - Header
@@ -75,6 +87,50 @@ struct HarborMapOverviewView: View {
                         .overlay(Capsule().stroke(.green.opacity(0.3), lineWidth: 1))
                 )
             }
+
+            Button {
+                Task { @MainActor in
+                    NewSessionWindowController.shared.show(viewModel: viewModel)
+                }
+            } label: {
+                HStack(spacing: 2) {
+                    Text("+")
+                        .font(.system(size: 10, weight: .black))
+                    Text("NEW")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(Color(red: 0.10, green: 0.45, blue: 0.30))
+                        .overlay(Capsule().stroke(PixelPalette.grass.opacity(0.5), lineWidth: 1))
+                )
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                Task { @MainActor in
+                    WorkspaceEditorWindowController.shared.show(viewModel: viewModel)
+                }
+            } label: {
+                HStack(spacing: 2) {
+                    Text("+")
+                        .font(.system(size: 10, weight: .black))
+                    Text("Workspace")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                }
+                .foregroundStyle(Color(red: 0.90, green: 0.72, blue: 0.20))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(Color(red: 0.90, green: 0.72, blue: 0.20).opacity(0.12))
+                        .overlay(Capsule().stroke(Color(red: 0.90, green: 0.72, blue: 0.20).opacity(0.4), lineWidth: 1))
+                )
+            }
+            .buttonStyle(.plain)
 
             Button { viewModel.closeToCompact() } label: {
                 Text("×")
@@ -113,25 +169,15 @@ struct HarborMapOverviewView: View {
 
     private func mainMapContent(in size: CGSize) -> some View {
         ZStack {
-            ForEach(Array(mainPageIslands.enumerated()), id: \.element.id) { index, island in
+            ForEach(Array(mainPageItems.enumerated()), id: \.element.id) { index, item in
                 let slotIndex = slotOrder[index % slotOrder.count]
                 let slot = mainSlots[slotIndex]
                 let pos = CGPoint(x: slot.x * size.width, y: slot.y * size.height)
-                let isSelected = island.id == viewModel.highlightedIsland?.id
 
-                MapProjectIslandNode(
-                    island: island,
-                    isSelected: isSelected,
-                    hasPendingPermission: viewModel.pendingHookRequest?.projectPath == island.path,
-                    compact: compact,
-                    onTap: {
-                        viewModel.highlightIsland(island)
-                        onAnyIslandTap?()
-                    }
-                )
-                .frame(width: nodeSize(for: island, selected: isSelected).width,
-                       height: nodeSize(for: island, selected: isSelected).height)
-                .position(pos)
+                mapNode(for: item, compact: compact)
+                    .frame(width: nodeSize(for: item, selected: isItemSelected(item)).width,
+                           height: nodeSize(for: item, selected: isItemSelected(item)).height)
+                    .position(pos)
             }
 
             if hiddenCount > 0 && !compact {
@@ -143,22 +189,19 @@ struct HarborMapOverviewView: View {
 
     private func extendedMapContent(in size: CGSize) -> some View {
         ZStack {
-            ForEach(Array(extendedPageIslands.enumerated()), id: \.element.id) { index, island in
+            ForEach(Array(extendedPageItems.enumerated()), id: \.element.id) { index, item in
                 let slot = extendedSlots[index % extendedSlots.count]
                 let pos = CGPoint(x: slot.x * size.width, y: slot.y * size.height)
-                let isSelected = island.id == viewModel.highlightedIsland?.id
 
-                StaggeredIslandNode(
-                    island: island,
-                    isSelected: isSelected,
-                    hasPendingPermission: viewModel.pendingHookRequest?.projectPath == island.path,
+                StaggeredMapNode(
+                    item: item,
+                    isSelected: isItemSelected(item),
                     compact: compact,
-                    onTap: {
-                        viewModel.highlightIsland(island)
-                        onAnyIslandTap?()
-                    },
-                    size: nodeSize(for: island, selected: isSelected),
-                    delay: Double(index) * 0.06
+                    onTap: { tapItem(item) },
+                    size: nodeSize(for: item, selected: isItemSelected(item)),
+                    delay: Double(index) * 0.06,
+                    hasPendingPermission: itemHasPending(item),
+                    onDelete: { deleteItem(item) }
                 )
                 .position(pos)
             }
@@ -192,7 +235,17 @@ struct HarborMapOverviewView: View {
 
     @ViewBuilder
     private var sessionDock: some View {
-        if let island = viewModel.highlightedIsland, !island.sessions.isEmpty {
+        if let ws = viewModel.highlightedWorkspace {
+            WorkspaceSessionDock(
+                workspace: ws,
+                onSessionTap: { viewModel.selectSession($0) },
+                onResume: { viewModel.resumeSession($0) },
+                onDelete: { viewModel.deleteSession($0) },
+                onNewSession: { folder in viewModel.newSessionInWorkspace(ws, folderPath: folder) }
+            )
+            .frame(height: 146)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if let island = viewModel.highlightedIsland, !island.sessions.isEmpty {
             HarborSessionDock(
                 island: island,
                 onSessionTap: { viewModel.selectSession($0) },
@@ -200,7 +253,7 @@ struct HarborMapOverviewView: View {
                 onDelete: { viewModel.deleteSession($0) },
                 onNewSession: { viewModel.newSession(for: island) }
             )
-            .frame(height: 126)
+            .frame(height: 146)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         } else {
             emptyDock
@@ -243,36 +296,123 @@ struct HarborMapOverviewView: View {
 
     // MARK: - Data
 
-    private var mainPageIslands: [ProjectIsland] {
-        Array(sortedIslands.prefix(6))
-    }
+    enum MapItem: Identifiable {
+        case island(ProjectIsland)
+        case workspace(Workspace)
 
-    private var extendedPageIslands: [ProjectIsland] {
-        Array(sortedIslands.dropFirst(6).prefix(8))
-    }
+        var id: String {
+            switch self {
+            case .island(let i): "island:\(i.id)"
+            case .workspace(let w): "ws:\(w.id)"
+            }
+        }
 
-    private var hiddenCount: Int {
-        max(0, viewModel.islands.count - 6)
-    }
+        var activeCount: Int {
+            switch self {
+            case .island(let i): i.activeCount
+            case .workspace(let w): w.activeCount
+            }
+        }
 
-    private var sortedIslands: [ProjectIsland] {
-        viewModel.islands.sorted { lhs, rhs in
-            let lhsPending = viewModel.pendingHookRequest?.projectPath == lhs.path
-            let rhsPending = viewModel.pendingHookRequest?.projectPath == rhs.path
-            if lhsPending != rhsPending { return lhsPending }
-            if lhs.activeCount != rhs.activeCount { return lhs.activeCount > rhs.activeCount }
-            if lhs.recentCount != rhs.recentCount { return lhs.recentCount > rhs.recentCount }
-            let lt = lhs.sessions.first?.lastModified ?? .distantPast
-            let rt = rhs.sessions.first?.lastModified ?? .distantPast
-            return lt > rt
+        var recentCount: Int {
+            switch self {
+            case .island(let i): i.recentCount
+            case .workspace(let w): w.recentCount
+            }
+        }
+
+        var latestModified: Date {
+            switch self {
+            case .island(let i): i.sessions.first?.lastModified ?? .distantPast
+            case .workspace(let w): w.sessions.first?.lastModified ?? .distantPast
+            }
         }
     }
 
-    private func nodeSize(for island: ProjectIsland, selected: Bool) -> CGSize {
+    private var sortedItems: [MapItem] {
+        var items: [MapItem] = viewModel.islands.map { .island($0) }
+            + viewModel.workspaces.map { .workspace($0) }
+        items.sort { lhs, rhs in
+            if lhs.activeCount != rhs.activeCount { return lhs.activeCount > rhs.activeCount }
+            if lhs.recentCount != rhs.recentCount { return lhs.recentCount > rhs.recentCount }
+            return lhs.latestModified > rhs.latestModified
+        }
+        return items
+    }
+
+    private var mainPageItems: [MapItem] {
+        Array(sortedItems.prefix(6))
+    }
+
+    private var extendedPageItems: [MapItem] {
+        Array(sortedItems.dropFirst(6).prefix(8))
+    }
+
+    private var hiddenCount: Int {
+        max(0, sortedItems.count - 6)
+    }
+
+    private func nodeSize(for item: MapItem, selected: Bool) -> CGSize {
         let scale: CGFloat = compact ? 0.55 : 1.0
-        if island.activeCount > 0 { return CGSize(width: 144 * scale, height: 88 * scale) }
-        if island.recentCount > 0 { return CGSize(width: 132 * scale, height: 80 * scale) }
+        if item.activeCount > 0 { return CGSize(width: 144 * scale, height: 88 * scale) }
+        if item.recentCount > 0 { return CGSize(width: 132 * scale, height: 80 * scale) }
         return CGSize(width: 118 * scale, height: 70 * scale)
+    }
+
+    private func isItemSelected(_ item: MapItem) -> Bool {
+        switch item {
+        case .island(let i): i.id == viewModel.highlightedIsland?.id
+        case .workspace(let w): w.id == viewModel.highlightedWorkspaceID
+        }
+    }
+
+    private func tapItem(_ item: MapItem) {
+        switch item {
+        case .island(let island):
+            viewModel.highlightIsland(island)
+        case .workspace(let ws):
+            viewModel.highlightWorkspace(ws)
+        }
+        onAnyIslandTap?()
+    }
+
+    private func itemHasPending(_ item: MapItem) -> Bool {
+        switch item {
+        case .island(let i): viewModel.pendingHookRequest?.projectPath == i.path
+        case .workspace(let w): w.folderPaths.contains(where: { viewModel.pendingHookRequest?.projectPath == $0 })
+        }
+    }
+
+    private func deleteItem(_ item: MapItem) {
+        switch item {
+        case .island(let island):
+            viewModel.deleteIsland(island)
+        case .workspace(let ws):
+            viewModel.requestDeleteWorkspace(id: ws.id)
+        }
+    }
+
+    @ViewBuilder
+    private func mapNode(for item: MapItem, compact: Bool) -> some View {
+        switch item {
+        case .island(let island):
+            MapProjectIslandNode(
+                island: island,
+                isSelected: isItemSelected(item),
+                hasPendingPermission: itemHasPending(item),
+                compact: compact,
+                onTap: { tapItem(item) },
+                onDelete: { viewModel.deleteIsland(island) }
+            )
+        case .workspace(let ws):
+            MapWorkspaceNode(
+                workspace: ws,
+                isSelected: isItemSelected(item),
+                compact: compact,
+                onTap: { tapItem(item) },
+                onDelete: { viewModel.requestDeleteWorkspace(id: ws.id) }
+            )
+        }
     }
 
     private var headerMascotState: PixelMascotState {
@@ -282,25 +422,40 @@ struct HarborMapOverviewView: View {
     }
 }
 
-private struct StaggeredIslandNode: View {
-    let island: ProjectIsland
+private struct StaggeredMapNode: View {
+    let item: HarborMapOverviewView.MapItem
     let isSelected: Bool
-    let hasPendingPermission: Bool
     var compact: Bool = false
     let onTap: () -> Void
     let size: CGSize
     let delay: Double
+    var hasPendingPermission: Bool = false
+    var onDelete: (() -> Void)? = nil
 
     @State private var visible = false
 
     var body: some View {
-        MapProjectIslandNode(
-            island: island,
-            isSelected: isSelected,
-            hasPendingPermission: hasPendingPermission,
-            compact: compact,
-            onTap: onTap
-        )
+        Group {
+            switch item {
+            case .island(let island):
+                MapProjectIslandNode(
+                    island: island,
+                    isSelected: isSelected,
+                    hasPendingPermission: hasPendingPermission,
+                    compact: compact,
+                    onTap: onTap,
+                    onDelete: onDelete
+                )
+            case .workspace(let ws):
+                MapWorkspaceNode(
+                    workspace: ws,
+                    isSelected: isSelected,
+                    compact: compact,
+                    onTap: onTap,
+                    onDelete: onDelete
+                )
+            }
+        }
         .frame(width: size.width, height: size.height)
         .opacity(visible ? 1 : 0)
         .scaleEffect(visible ? 1 : 0.7)

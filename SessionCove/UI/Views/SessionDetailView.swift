@@ -64,48 +64,46 @@ struct SessionDetailView: View {
     // MARK: - Agent Avatar
 
     private var agentAvatar: some View {
-        ZStack {
+        HStack(spacing: 16) {
+            ZStack {
+                if hasPendingPermission {
+                    PixelAttentionRing()
+                        .frame(width: 96, height: 96)
+                }
+
+                AnimatedMascot(
+                    active: session.status == .active,
+                    archived: session.status == .archived,
+                    size: 72
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(session.displayTitle.uppercased())
+                    .font(.system(size: 12, weight: .black, design: .monospaced))
+                    .foregroundStyle(.white)
+
+                Text(projectName.uppercased())
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(PixelPalette.foam.opacity(0.84))
+                    .lineLimit(1)
+
+                HStack(spacing: 6) {
+                    statusIndicator
+                    Text(stateDescription)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(stateColor.opacity(0.9))
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(PixelPalette.hud.opacity(0.44))
-                .frame(height: 120)
-
-            HStack(spacing: 16) {
-                ZStack {
-                    if hasPendingPermission {
-                        PixelAttentionRing()
-                            .frame(width: 96, height: 96)
-                    }
-
-                    AnimatedMascot(
-                        active: session.status == .active,
-                        archived: session.status == .archived,
-                        size: 72
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(session.displayTitle.uppercased())
-                        .font(.system(size: 12, weight: .black, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-
-                    Text(projectName.uppercased())
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(PixelPalette.foam.opacity(0.84))
-                        .lineLimit(1)
-
-                    HStack(spacing: 6) {
-                        statusIndicator
-                        Text(stateDescription)
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .foregroundStyle(stateColor.opacity(0.9))
-                    }
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-        }
+        )
     }
 
     // MARK: - Captain Log (metadata)

@@ -38,6 +38,8 @@ final class CoveViewModel: @unchecked Sendable {
     /// StatusMenu can call startSession via the viewModel reference.
     var managedSessions: ManagedSessionController { ManagedSessionController.shared }
     var islands: [ProjectIsland] = []
+    var workspaces: [Workspace] = []
+    var highlightedWorkspaceID: String?
     var uiMode: CoveUIMode = .pet
     var openReason: CoveOpenReason = .unknown
     var selectedIsland: ProjectIsland?
@@ -258,7 +260,47 @@ final class CoveViewModel: @unchecked Sendable {
         var scanned = SessionScanner.scan(providers: providers)
         let activeLocations = ProcessDetector.shared.detectActiveAgentLocations()
         ProcessDetector.shared.applyStatuses(activeLocations: activeLocations, to: &scanned)
+
+        // Workspace integration: resolve pending claims, then partition sessions
+        // Resolve pending claims from newly appeared sessions
+        let allSessions = scanned.flatMap(\.sessions)
+        let recentSessions = allSessions
+            .filter { $0.lastModified.timeIntervalSinceNow > -60 }
+            .map { (id: $0.id, projectPath: $0.projectPath) }
+        WorkspaceStore.shared.resolvePendingClaims(newSessions: recentSessions)
+
+        // Re-read claimed IDs after resolution
+        let finalClaimedIds = WorkspaceStore.shared.allClaimedSessionIds()
+
+        // Remove claimed sessions from regular islands
+        for idx in scanned.indices {
+            scanned[idx].sessions.removeAll { finalClaimedIds.contains($0.id) }
+        }
+        scanned.removeAll { $0.sessions.isEmpty }
+
+        // Resolve workspace sessions
+        let sessionIndex = Dictionary(
+            allSessions.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var resolvedWorkspaces = WorkspaceStore.shared.workspaces.map { data in
+            var ws = Workspace(data: data)
+            ws.resolveSessions(from: sessionIndex)
+            return ws
+        }
+
+        // Apply statuses to workspace sessions
+        for wsIdx in resolvedWorkspaces.indices {
+            for sIdx in resolvedWorkspaces[wsIdx].sessions.indices {
+                let path = resolvedWorkspaces[wsIdx].sessions[sIdx].projectPath
+                if activeLocations.contains(where: { $0.cwd == path }) {
+                    resolvedWorkspaces[wsIdx].sessions[sIdx].status = .active
+                }
+            }
+        }
+
         self.islands = scanned
+        self.workspaces = resolvedWorkspaces
     }
 
     var pingExpandDirection: HorizontalEdge = .trailing
@@ -344,6 +386,7 @@ final class CoveViewModel: @unchecked Sendable {
 
     func highlightIsland(_ island: ProjectIsland) {
         highlightedIslandID = island.id
+        highlightedWorkspaceID = nil
     }
 
     func selectIsland(_ island: ProjectIsland) {
@@ -369,6 +412,83 @@ final class CoveViewModel: @unchecked Sendable {
         print("[CoveViewModel] newSession tapped for: \(island.path)")
         CoveSoundManager.shared.play(.bubblePop)
         SessionResumer.launchNew(projectPath: island.path)
+    }
+
+    // MARK: - Workspace
+
+    var highlightedWorkspace: Workspace? {
+        guard let id = highlightedWorkspaceID else { return nil }
+        return workspaces.first { $0.id == id }
+    }
+
+    func highlightWorkspace(_ workspace: Workspace) {
+        highlightedWorkspaceID = workspace.id
+        highlightedIslandID = nil
+    }
+
+    func newSessionInWorkspace(_ workspace: Workspace, folderPath: String) {
+        print("[CoveViewModel] newSession in workspace \(workspace.name) at: \(folderPath)")
+        CoveSoundManager.shared.play(.bubblePop)
+        WorkspaceStore.shared.addPendingClaim(workspaceId: workspace.id, projectPath: folderPath)
+        SessionResumer.launchNew(projectPath: folderPath)
+    }
+
+    func createWorkspace(name: String, folderPaths: [String]) {
+        WorkspaceStore.shared.create(name: name, folderPaths: folderPaths)
+        Task { await refresh() }
+    }
+
+    func editWorkspace(id: String, name: String?, folderPaths: [String]?) {
+        WorkspaceStore.shared.update(id: id, name: name, folderPaths: folderPaths)
+        Task { await refresh() }
+    }
+
+    var pendingWorkspaceDeletion: String?
+
+    func requestDeleteWorkspace(id: String) {
+        pendingWorkspaceDeletion = id
+    }
+
+    func confirmDeleteWorkspace() {
+        guard let id = pendingWorkspaceDeletion else { return }
+        if let ws = WorkspaceStore.shared.workspaces.first(where: { $0.id == id }),
+           let wsDir = ws.folderPaths.first {
+            // Trash the workspace directory (includes symlinks)
+            let url = URL(fileURLWithPath: wsDir)
+            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }
+        // Also trash all claimed sessions
+        let wsData = WorkspaceStore.shared.workspaces.first { $0.id == id }
+        if let sessionIds = wsData?.sessionIds {
+            let allSessions = islands.flatMap(\.sessions) + workspaces.flatMap(\.sessions)
+            for sid in sessionIds {
+                if let session = allSessions.first(where: { $0.id == sid }) {
+                    try? FileManager.default.trashItem(
+                        at: URL(fileURLWithPath: session.jsonlPath),
+                        resultingItemURL: nil
+                    )
+                }
+            }
+        }
+        WorkspaceStore.shared.delete(id: id)
+        if highlightedWorkspaceID == id { highlightedWorkspaceID = nil }
+        pendingWorkspaceDeletion = nil
+        CoveSoundManager.shared.play(.bubblePop)
+        Task { await refresh() }
+    }
+
+    func cancelDeleteWorkspace() {
+        pendingWorkspaceDeletion = nil
+    }
+
+    func deleteIsland(_ island: ProjectIsland) {
+        for session in island.sessions {
+            let url = URL(fileURLWithPath: session.jsonlPath)
+            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }
+        CoveSoundManager.shared.play(.bubblePop)
+        islands.removeAll { $0.id == island.id }
+        if highlightedIslandID == island.id { highlightedIslandID = nil }
     }
 
     func deleteSession(_ session: SessionRecord) {

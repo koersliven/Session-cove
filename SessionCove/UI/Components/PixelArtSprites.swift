@@ -52,6 +52,7 @@ enum PixelPalette {
 @MainActor
 enum PixelSpriteCache {
     private static var islandCache: [IslandMood: NSImage] = [:]
+    private static var workspaceCache: [IslandMood: NSImage] = [:]
     private static var octopusCache: [PixelMascotState: NSImage] = [:]
     private static var seaLifeCache: [SeaLifeKind: NSImage] = [:]
 
@@ -69,6 +70,27 @@ enum PixelSpriteCache {
             }
         }
         islandCache[mood] = image
+        return image
+    }
+
+    static func workspace(mood: IslandMood) -> NSImage {
+        if let cached = workspaceCache[mood] { return cached }
+        let amber = Color(red: 0.85, green: 0.65, blue: 0.20)
+        let amberLight = Color(red: 0.95, green: 0.78, blue: 0.30)
+        let bridge = Color(red: 0.55, green: 0.35, blue: 0.15)
+        let image = rasterize(rows: PixelWorkspaceSprite.rows) { token in
+            switch token {
+            case "S": mood == .archived ? Color(red: 0.50, green: 0.49, blue: 0.42) : amber
+            case "G": mood == .archived ? Color(red: 0.23, green: 0.33, blue: 0.30) : amberLight
+            case "L": mood.palm
+            case "T": PixelPalette.trunk
+            case "R": mood.rock
+            case "B": bridge
+            case "O": PixelPalette.ink.opacity(0.70)
+            default: .clear
+            }
+        }
+        workspaceCache[mood] = image
         return image
     }
 

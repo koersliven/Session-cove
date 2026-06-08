@@ -12,6 +12,7 @@ struct MapProjectIslandNode: View {
     /// this node — they coexist at 6× density.
     var compact: Bool = false
     let onTap: () -> Void
+    var onDelete: (() -> Void)? = nil
 
     @State private var isHovered = false
     @State private var sparklePhase: CGFloat = 0
@@ -155,6 +156,13 @@ struct MapProjectIslandNode: View {
                 return
             }
             ambientReady = true
+        }
+        .contextMenu {
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete Island", systemImage: "trash")
+                }
+            }
         }
     }
 

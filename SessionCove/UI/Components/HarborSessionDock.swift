@@ -7,6 +7,9 @@ struct HarborSessionDock: View {
     let onDelete: (SessionRecord) -> Void
     var onNewSession: (() -> Void)? = nil
 
+    @State private var isSelecting = false
+    @State private var selected: Set<String> = []
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             dockHeader
@@ -33,12 +36,20 @@ struct HarborSessionDock: View {
 
             Spacer()
 
-            if let onNewSession {
-                Button(action: onNewSession) {
+            if isSelecting {
+                Button {
+                    for id in selected {
+                        if let session = island.sessions.first(where: { $0.id == id }) {
+                            onDelete(session)
+                        }
+                    }
+                    selected.removeAll()
+                    isSelecting = false
+                } label: {
                     HStack(spacing: 3) {
-                        Text("+")
-                            .font(.system(size: 11, weight: .black))
-                        Text("NEW")
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 8))
+                        Text("\(selected.count)")
                             .font(.system(size: 8, weight: .black, design: .monospaced))
                     }
                     .foregroundStyle(.white)
@@ -46,11 +57,62 @@ struct HarborSessionDock: View {
                     .padding(.vertical, 3)
                     .background(
                         Capsule()
-                            .fill(Color(red: 0.10, green: 0.45, blue: 0.30))
-                            .overlay(Capsule().stroke(PixelPalette.grass.opacity(0.5), lineWidth: 1))
+                            .fill(PixelPalette.coral.opacity(selected.isEmpty ? 0.4 : 0.9))
+                            .overlay(Capsule().stroke(PixelPalette.coral, lineWidth: 1))
                     )
                 }
                 .buttonStyle(.plain)
+                .disabled(selected.isEmpty)
+
+                Button {
+                    selected.removeAll()
+                    isSelecting = false
+                } label: {
+                    Text("✕")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    isSelecting = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("SELECT")
+                            .font(.system(size: 8, weight: .black, design: .monospaced))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color(red: 0.15, green: 0.20, blue: 0.30))
+                            .overlay(Capsule().stroke(.white.opacity(0.2), lineWidth: 1))
+                    )
+                }
+                .buttonStyle(.plain)
+
+                if let onNewSession {
+                    Button(action: onNewSession) {
+                        HStack(spacing: 3) {
+                            Text("+")
+                                .font(.system(size: 11, weight: .black))
+                            Text("NEW")
+                                .font(.system(size: 8, weight: .black, design: .monospaced))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color(red: 0.10, green: 0.45, blue: 0.30))
+                                .overlay(Capsule().stroke(PixelPalette.grass.opacity(0.5), lineWidth: 1))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
     }
@@ -59,12 +121,16 @@ struct HarborSessionDock: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 8) {
                 ForEach(dockSessions) { session in
-                    HarborSessionDockCard(
-                        session: session,
-                        onTap: { onSessionTap(session) },
-                        onResume: { onResume(session) },
-                        onDelete: { onDelete(session) }
-                    )
+                    if isSelecting {
+                        selectableCard(for: session)
+                    } else {
+                        HarborSessionDockCard(
+                            session: session,
+                            onTap: { onSessionTap(session) },
+                            onResume: { onResume(session) },
+                            onDelete: { onDelete(session) }
+                        )
+                    }
                 }
                 if island.totalCount > 8 {
                     HiddenSessionsCard(count: island.totalCount - 8)
@@ -72,6 +138,32 @@ struct HarborSessionDock: View {
             }
             .padding(.vertical, 2)
         }
+    }
+
+    private func selectableCard(for session: SessionRecord) -> some View {
+        let isSelected = selected.contains(session.id)
+        return HarborSessionDockCard(
+            session: session,
+            onTap: {
+                if isSelected {
+                    selected.remove(session.id)
+                } else {
+                    selected.insert(session.id)
+                }
+            },
+            onResume: {},
+            onDelete: {}
+        )
+        .overlay(alignment: .topLeading) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(isSelected ? PixelPalette.foam : .white.opacity(0.4))
+                .padding(6)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? PixelPalette.foam.opacity(0.6) : .clear, lineWidth: 2)
+        )
     }
 
     @ViewBuilder
@@ -112,27 +204,52 @@ struct HarborSessionDockCard: View {
     let onDelete: () -> Void
 
     @State private var isHovered = false
+    @State private var isRenaming = false
+    @State private var renamingText = ""
+
+    private var customName: String? {
+        SessionNameStore.shared.name(for: session.id)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // Info area - taps here open session detail
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
-                    SessionDot(status: session.status)
-                    Text(session.relativeTime)
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.5))
-                    Spacer()
+            // Name + rename button
+            HStack(spacing: 0) {
+                Button {
+                    renamingText = customName ?? ""
+                    isRenaming = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Text(customName ?? "—")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(customName != nil ? .white : .white.opacity(0.3))
+                            .lineLimit(1)
+                        Image(systemName: "pencil.line")
+                            .font(.system(size: 8))
+                            .foregroundStyle(PixelPalette.foam.opacity(0.6))
+                    }
                 }
-
-                Text(session.displayTitle)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .lineLimit(2)
-                    .frame(height: 26, alignment: .topLeading)
+                .buttonStyle(.plain)
+                Spacer()
             }
-            .contentShape(Rectangle())
-            .onTapGesture(perform: onTap)
+
+            // Status + time
+            HStack(spacing: 5) {
+                SessionDot(status: session.status)
+                Text(session.relativeTime)
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+
+            // AI summary — 3 lines
+            Text(session.displayTitle)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.88))
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onTap)
 
             // Action row - button handles its own click, no parent gesture interference
             HStack {
@@ -163,7 +280,7 @@ struct HarborSessionDockCard: View {
             }
         }
         .padding(8)
-        .frame(width: 156, height: 88)
+        .frame(width: 156, height: 120)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isHovered ? Color(red: 0.06, green: 0.16, blue: 0.26) : Color(red: 0.04, green: 0.11, blue: 0.19))
@@ -174,9 +291,38 @@ struct HarborSessionDockCard: View {
         )
         .onHover { isHovered = $0 }
         .contextMenu {
+            Button(action: {
+                renamingText = customName ?? ""
+                isRenaming = true
+            }) {
+                Label("重命名", systemImage: "pencil")
+            }
             Button(role: .destructive, action: onDelete) {
                 Label("Move to Trash", systemImage: "trash")
             }
+        }
+        .popover(isPresented: $isRenaming) {
+            VStack(spacing: 8) {
+                Text("重命名")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.primary)
+                TextField("自定义名称", text: $renamingText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 160)
+                HStack(spacing: 8) {
+                    Button("取消") { isRenaming = false }
+                        .font(.system(size: 10))
+                    Button("保存") {
+                        SessionNameStore.shared.setName(
+                            renamingText.isEmpty ? nil : renamingText,
+                            for: session.id
+                        )
+                        isRenaming = false
+                    }
+                    .font(.system(size: 10, weight: .bold))
+                }
+            }
+            .padding(12)
         }
     }
 
@@ -209,7 +355,7 @@ struct HiddenSessionsCard: View {
                 .font(.system(size: 8, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.3))
         }
-        .frame(width: 64, height: 88)
+        .frame(width: 64, height: 120)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(.white.opacity(0.04))
