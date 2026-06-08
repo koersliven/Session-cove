@@ -4,6 +4,10 @@ struct IslandSessionListView: View {
     let island: ProjectIsland
     @Bindable var viewModel: CoveViewModel
     @State private var hoveredSessionID: String?
+    @State private var editingSessionId: String?
+    @State private var editingName: String = ""
+    @State private var isSelectionMode: Bool = false
+    @State private var selectedSessionIds: Set<String> = []
 
     private var displayedIsland: ProjectIsland {
         viewModel.islands.first { $0.id == island.id } ?? island
@@ -29,8 +33,88 @@ struct IslandSessionListView: View {
                 header
                 projectBase
                 sessionDock
+                if isSelectionMode {
+                    batchDeleteBar
+                }
             }
         }
+        .popover(isPresented: Binding(
+            get: { editingSessionId != nil },
+            set: { if !$0 { editingSessionId = nil } }
+        )) {
+            if let sid = editingSessionId {
+                renameSheet(sessionId: sid)
+            }
+        }
+    }
+
+    // MARK: - Batch delete bar
+
+    private var batchDeleteBar: some View {
+        HStack {
+            Text("\(selectedSessionIds.count) 已选")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.8))
+            Spacer()
+            Button("取消") {
+                isSelectionMode = false
+                selectedSessionIds.removeAll()
+            }
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.7))
+            .buttonStyle(.plain)
+
+            Button {
+                deleteSelectedSessions()
+            } label: {
+                Text("删除选中")
+                    .font(.system(size: 10, weight: .black, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.red.opacity(0.7)))
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedSessionIds.isEmpty)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.black.opacity(0.5))
+    }
+
+    private func deleteSelectedSessions() {
+        for session in sortedSessions where selectedSessionIds.contains(session.id) {
+            viewModel.deleteSession(session)
+        }
+        selectedSessionIds.removeAll()
+        isSelectionMode = false
+    }
+
+    // MARK: - Rename sheet
+
+    private func renameSheet(sessionId: String) -> some View {
+        VStack(spacing: 12) {
+            Text("重命名 Session")
+                .font(.system(size: 12, weight: .black, design: .monospaced))
+                .foregroundStyle(.white)
+            TextField("自定义名称", text: $editingName)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+            HStack(spacing: 12) {
+                Button("取消") { editingSessionId = nil }
+                    .buttonStyle(.plain)
+                Button("保存") {
+                    SessionNameStore.shared.setName(
+                        editingName.isEmpty ? nil : editingName,
+                        for: sessionId
+                    )
+                    editingSessionId = nil
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .background(Color(red: 0.05, green: 0.10, blue: 0.16))
     }
 
     private var header: some View {
@@ -47,6 +131,11 @@ struct IslandSessionListView: View {
                 }
             }
             Spacer()
+            // Batch select toggle
+            pixelButton(isSelectionMode ? "完成" : "选择") {
+                isSelectionMode.toggle()
+                if !isSelectionMode { selectedSessionIds.removeAll() }
+            }
             PixelHUDPanel {
                 HStack(spacing: 12) {
                     stat("ON", displayedIsland.activeCount, PixelPalette.grass)
@@ -137,7 +226,26 @@ struct IslandSessionListView: View {
 
     private func sessionCard(_ session: SessionRecord) -> some View {
         let isHovered = hoveredSessionID == session.id
-        return VStack(alignment: .leading, spacing: 6) {
+        return HStack(spacing: 6) {
+            // Checkbox for batch selection
+            if isSelectionMode {
+                Button {
+                    if selectedSessionIds.contains(session.id) {
+                        selectedSessionIds.remove(session.id)
+                    } else {
+                        selectedSessionIds.insert(session.id)
+                    }
+                } label: {
+                    Image(systemName: selectedSessionIds.contains(session.id)
+                          ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 16))
+                        .foregroundStyle(selectedSessionIds.contains(session.id)
+                                         ? PixelPalette.alert : .white.opacity(0.5))
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
             // Info area - taps here open session detail
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 7) {
@@ -152,11 +260,34 @@ struct IslandSessionListView: View {
                     }
                 }
 
-                Text(session.displayTitle)
-                    .font(.system(size: 10, weight: .black, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .lineLimit(2)
-                    .frame(height: 28, alignment: .topLeading)
+                // Custom name (bold, user-defined) + AI summary (lighter)
+                HStack(spacing: 4) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let customName = SessionNameStore.shared.name(for: session.id) {
+                            Text(customName)
+                                .font(.system(size: 10, weight: .black, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                        }
+                        Text(session.displayTitle)
+                            .font(.system(size: SessionNameStore.shared.name(for: session.id) != nil ? 8 : 10,
+                                          weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(SessionNameStore.shared.name(for: session.id) != nil ? 0.55 : 0.92))
+                            .lineLimit(2)
+                    }
+                    Spacer(minLength: 2)
+                    // Rename button
+                    Button {
+                        editingSessionId = session.id
+                        editingName = SessionNameStore.shared.name(for: session.id) ?? ""
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .frame(minHeight: 28, alignment: .topLeading)
             }
             .contentShape(Rectangle())
             .onTapGesture { viewModel.selectSession(session) }
@@ -203,9 +334,10 @@ struct IslandSessionListView: View {
                         }
                 }
             }
-        }
+        } // end VStack
+        } // end HStack (checkbox + card content)
         .padding(8)
-        .frame(width: 188, height: 112)
+        .frame(width: isSelectionMode ? 220 : 188, height: 112)
         .background {
             PixelBox(
                 fill: isHovered ? Color(red: 0.08, green: 0.17, blue: 0.24) : PixelPalette.hud.opacity(0.88),
