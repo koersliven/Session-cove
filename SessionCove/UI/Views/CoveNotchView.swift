@@ -53,7 +53,7 @@ struct CoveNotchView: View {
                                     viewModel.decideHookRequest(.answer(answers: answers))
                                 },
                                 onCancel: {
-                                    viewModel.decideHookRequest(.deny)
+                                    viewModel.deferHookRequest()
                                 }
                             )
                         case .completion:
@@ -193,6 +193,10 @@ private struct AdaptiveHeader: View {
                 activeBadge
             }
 
+            if viewModel.deferredRequestId != nil, viewModel.notchStatus != .opened {
+                deferredBadge
+            }
+
             if viewModel.notchStatus == .opened {
                 closeButton
             }
@@ -255,6 +259,27 @@ private struct AdaptiveHeader: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(Capsule().fill(.green.opacity(0.12)))
+    }
+
+    private var deferredBadge: some View {
+        Button {
+            viewModel.deferredRequestId = nil
+            viewModel.notchStatus = .opened
+        } label: {
+            HStack(spacing: 3) {
+                Circle().fill(PixelPalette.alert).frame(width: 6, height: 6)
+                Text("待处理")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(PixelPalette.alert)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(PixelPalette.alert.opacity(0.15))
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var closeButton: some View {

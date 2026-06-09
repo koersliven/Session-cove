@@ -63,6 +63,33 @@ struct SessionResumer {
                 print("[SessionResumer] focusOrLaunch focused tty=\(lookup.tty)")
                 return
             }
+
+            // We found a live process but couldn't focus its specific TTY.
+            // The session IS running — just activate the terminal app itself
+            // rather than launching a broken `claude --resume` in a new window.
+            if let lookup {
+                if activateTerminalForPid(lookup.pid) {
+                    print("[SessionResumer] focusOrLaunch activated terminal app for pid=\(lookup.pid)")
+                    return
+                }
+            }
+
+            // findSessionTTY missed entirely — use ProcessDetector as a
+            // backup to verify whether a live agent exists at projectPath
+            // before giving up and launching a new session.
+            if lookup == nil {
+                let activeLocations = ProcessDetector.shared.detectActiveAgentLocations()
+                let targetCwd = normalizePath(projectPath)
+                if activeLocations.contains(where: { normalizePath($0.cwd) == targetCwd }) {
+                    if activateAnyTerminal() {
+                        print("[SessionResumer] focusOrLaunch activated terminal via ProcessDetector fallback")
+                        return
+                    }
+                }
+            }
+
+            // No live process found at projectPath, or every activation
+            // attempt failed. Launch a new session as a last resort.
             launchNewSession(
                 sessionId: sessionId,
                 projectPath: projectPath,
@@ -352,6 +379,29 @@ struct SessionResumer {
             }
         }
         return binaries
+    }
+
+    // MARK: - Terminal activation (focusOrLaunch helpers)
+
+    /// Activate the terminal that owns `pid` by walking its ancestor tree.
+    /// Falls back to activating any running terminal in priority order.
+    private static func activateTerminalForPid(_ pid: Int32) -> Bool {
+        if let kind = TerminalDetector.ancestorTerminal(of: pid) {
+            if TerminalAdapterHelpers.activateRunningApp(bundleID: kind.bundleID) {
+                return true
+            }
+        }
+        return activateAnyTerminal()
+    }
+
+    /// Activate any known running terminal app, in priority order.
+    private static func activateAnyTerminal() -> Bool {
+        for kind in TerminalDetector.supportedKinds {
+            if TerminalAdapterHelpers.activateRunningApp(bundleID: kind.bundleID) {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Adapter lookup

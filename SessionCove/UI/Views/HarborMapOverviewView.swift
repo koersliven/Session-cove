@@ -88,6 +88,28 @@ struct HarborMapOverviewView: View {
                 )
             }
 
+            if viewModel.deferredRequestId != nil {
+                Button {
+                    viewModel.deferredRequestId = nil
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "bell.badge.fill")
+                            .font(.system(size: 9))
+                        Text("待处理")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundStyle(PixelPalette.alert)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(PixelPalette.alert.opacity(0.12))
+                            .overlay(Capsule().stroke(PixelPalette.alert.opacity(0.4), lineWidth: 1))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
             Button {
                 Task { @MainActor in
                     NewSessionWindowController.shared.show(viewModel: viewModel)

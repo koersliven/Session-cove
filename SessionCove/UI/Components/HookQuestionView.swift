@@ -102,9 +102,7 @@ struct HookQuestionView: View {
 
             if !question.options.isEmpty {
                 optionsList(for: question)
-                if question.allowsOther {
-                    otherField(for: question)
-                }
+                otherField(for: question)
             } else if question.isSecret {
                 secureField(for: question)
             } else {
@@ -230,20 +228,32 @@ struct HookQuestionView: View {
     }
 
     private func otherField(for question: HookInterventionQuestion) -> some View {
-        TextField("Other...", text: textBinding(for: question))
-            .textFieldStyle(.plain)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.black.opacity(0.40))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.white.opacity(0.20), lineWidth: 1)
-                    )
-            )
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text("或")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+                Text("自定义输入")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+            .padding(.top, 4)
+
+            TextField("在这里输入你的回答...", text: textBinding(for: question))
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.black.opacity(0.40))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.white.opacity(0.20), lineWidth: 1)
+                        )
+                )
+        }
     }
 
     private var actionRow: some View {
@@ -251,7 +261,7 @@ struct HookQuestionView: View {
             Button {
                 onCancel()
             } label: {
-                Text("Cancel")
+                Text("稍后再看")
                     .font(.system(size: 10, weight: .black, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.64))
                     .padding(.horizontal, 9)
@@ -342,8 +352,8 @@ struct HookQuestionView: View {
                 let labels = optionIds.compactMap { optId in
                     question.options.first(where: { $0.id == optId })?.title
                 }
-                if question.allowsOther && !text.isEmpty {
-                    // "Other" with custom text: send the user-typed text
+                if !text.isEmpty {
+                    // "Other" free-text input: send the user-typed text
                     payload[question.prompt] = text
                 } else {
                     payload[question.prompt] = labels.joined(separator: ", ")

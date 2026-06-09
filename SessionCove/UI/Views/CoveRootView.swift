@@ -107,7 +107,7 @@ struct CoveRootView: View {
                         viewModel.decideHookRequest(.answer(answers: answers))
                     },
                     onCancel: {
-                        viewModel.decideHookRequest(.deny)
+                        viewModel.deferHookRequest()
                     }
                 )
                 .padding(.horizontal, 8)

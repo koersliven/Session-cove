@@ -46,6 +46,7 @@ final class CoveViewModel: @unchecked Sendable {
     var selectedSession: SessionRecord?
     var highlightedIslandID: String?
     var pendingHookRequest: HookPermissionRequest?
+    var deferredRequestId: String? = nil
     var lastHookDecision: HookApprovalDecision?
     var hookIntegrationError: String?
     /// True when the user clicked the chevron on PermissionPingCard to see
@@ -314,6 +315,11 @@ final class CoveViewModel: @unchecked Sendable {
     var permissionInterruption: Bool = false
 
     func toggle() {
+        // Clear deferred question so the poll loop can re-surface it next cycle
+        if deferredRequestId != nil {
+            deferredRequestId = nil
+        }
+
         if uiMode == .permissionInterruption {
             return
         } else if uiMode == .pet && pendingHookRequest != nil {
@@ -652,6 +658,15 @@ final class CoveViewModel: @unchecked Sendable {
         updatePendingHookRequest(nil)
     }
 
+    /// Defer a .question hook request without answering. Hides the popup
+    /// but does NOT write a response file — the Python bridge keeps waiting.
+    /// The deferred request won't re-surface until the user manually opens
+    /// the pet/notch (which clears `deferredRequestId`).
+    func deferHookRequest() {
+        deferredRequestId = pendingHookRequest?.id
+        updatePendingHookRequest(nil)
+    }
+
     @MainActor
     func startHookPolling() {
         hookPollTask?.cancel()
@@ -678,6 +693,11 @@ final class CoveViewModel: @unchecked Sendable {
                 }
                 // Skip already-resolved IDs (prevents duplicate popup)
                 if let real, resolvedIDs.contains(real.id) {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    continue
+                }
+                // Skip deferred question — don't re-show until user opens pet/notch
+                if let real, real.id == self.deferredRequestId {
                     try? await Task.sleep(for: .milliseconds(500))
                     continue
                 }
