@@ -173,8 +173,10 @@ final class CoveViewModel: @unchecked Sendable {
 
     @MainActor
     func initialScan() async {
+        DiagnosticLogger.shared.log("App started, islands=\(islands.count)", module: "App")
         CoveSoundManager.shared.play(.oceanAmbient)
         await refresh()
+        DiagnosticLogger.shared.log("Initial scan done, islands=\(islands.count) workspaces=\(workspaces.count)", module: "App")
         startWatching()
         startPeriodicRefresh()
         startPetBehavior()
@@ -504,6 +506,7 @@ final class CoveViewModel: @unchecked Sendable {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         } catch {
             print("[CoveViewModel] deleteSession failed: \(error.localizedDescription)")
+            DiagnosticLogger.shared.log("deleteSession failed: \(error.localizedDescription)", module: "CoveViewModel")
             return
         }
         CoveSoundManager.shared.play(.bubblePop)

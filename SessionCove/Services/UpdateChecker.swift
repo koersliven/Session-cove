@@ -45,7 +45,7 @@ final class UpdateChecker: ObservableObject {
                 }
             } catch {
                 state = .error(error.localizedDescription)
-                print("[UpdateChecker] check failed: \(error.localizedDescription)")
+                DiagnosticLogger.shared.log("check failed: \(error.localizedDescription)", module: "UpdateChecker")
             }
         }
     }
@@ -81,7 +81,7 @@ final class UpdateChecker: ObservableObject {
                 try installFromDMG(localDMG)
             } catch {
                 state = .error("安装失败: \(error.localizedDescription)")
-                print("[UpdateChecker] install failed: \(error)")
+                DiagnosticLogger.shared.log("install failed: \(error)", module: "UpdateChecker")
             }
         }
     }
@@ -194,7 +194,7 @@ final class UpdateChecker: ObservableObject {
 
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
-            print("[UpdateChecker] HTTP \(http.statusCode): \(body)")
+            DiagnosticLogger.shared.log("HTTP \(http.statusCode): \(body)", module: "UpdateChecker")
             throw URLError(.badServerResponse)
         }
 

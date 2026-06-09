@@ -14,6 +14,7 @@ import AppKit
 struct SessionResumer {
     static func resume(session: SessionRecord) {
         print("[SessionResumer] resume called for session: \(session.id) project: \(session.projectPath)")
+        DiagnosticLogger.shared.log("resume: \(session.id) at \(session.projectPath)", module: "SessionResumer")
 
         // Everything below — TTY lookup, ancestor walk (up to 128 ps calls),
         // adapter focus/launch (osascript or kitty/wezterm CLI) — must stay
@@ -57,6 +58,7 @@ struct SessionResumer {
         providerId: String = "claude"
     ) {
         print("[SessionResumer] focusOrLaunch sessionId=\(sessionId.prefix(12)) project=\(projectPath) provider=\(providerId)")
+        DiagnosticLogger.shared.log("focusOrLaunch: \(sessionId.prefix(12)) at \(projectPath)", module: "SessionResumer")
         DispatchQueue.global(qos: .userInitiated).async {
             let lookup = findSessionTTY(sessionId: sessionId, projectPath: projectPath)
             if let lookup, focusExistingSession(tty: lookup.tty, pid: lookup.pid) {

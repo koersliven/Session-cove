@@ -36,10 +36,65 @@ struct AboutTab: View {
 
             updateSection
 
+            diagnosticSection
+
             Spacer().frame(height: 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+
+    // MARK: - Diagnostics
+
+    @State private var diagnosticDescription = ""
+    @State private var diagnosticStatus: String?
+    @State private var isExporting = false
+
+    private var diagnosticSection: some View {
+        VStack(spacing: 8) {
+            Divider().padding(.vertical, 4)
+
+            TextField("描述你遇到的问题（可选）", text: $diagnosticDescription)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+
+            Button {
+                isExporting = true
+                diagnosticStatus = nil
+                Task {
+                    let result = await DiagnosticsExporter.shared.export(
+                        userDescription: diagnosticDescription
+                    )
+                    isExporting = false
+                    switch result {
+                    case .issueCreated(let url):
+                        diagnosticStatus = "✅ Issue 已创建: \(url)"
+                        NSWorkspace.shared.open(URL(string: url)!)
+                    case .savedLocally(let path):
+                        diagnosticStatus = "📁 已保存到 \(path)\n请在浏览器中手动提交 Issue"
+                    case .error(let msg):
+                        diagnosticStatus = "❌ \(msg)"
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    if isExporting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "ladybug.fill")
+                    }
+                    Text("上报问题")
+                }
+            }
+            .disabled(isExporting)
+
+            if let status = diagnosticStatus {
+                Text(status)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
     }
 
     @ViewBuilder
