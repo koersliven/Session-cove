@@ -266,6 +266,17 @@ final class HookSocketServer {
         let sessionId = request.sessionId ?? ""
         let cwd = request.payload["cwd"] as? String ?? ""
 
+        // A non-question PermissionRequest whose tool_input is empty carries
+        // nothing for the user to judge — the card degrades to the generic
+        // "<tool> is asking for permission." summary with an empty `{}` detail
+        // panel (see `buildSummary`). Surfacing that popup is pure noise, so
+        // auto-allow it instead of writing a pending. Narrow on purpose:
+        // tools with a non-empty (even unrecognized) input still render real
+        // JSON the user can review, so those keep surfacing.
+        if !isQuestionTool && toolInput.isEmpty {
+            return .allow(eventName: eventName)
+        }
+
         // Build request_id WITHOUT event_name so PreToolUse and PermissionRequest
         // for the same AskUserQuestion share the SAME pending/response file.
         // Include first question text so different questions get different IDs.

@@ -1257,49 +1257,6 @@ enum ClaudePermissionHook {
                 return text, True
             return text, False
 
-        def write_cursor_reminder(payload, provider_id, source_event):
-            # Fire-and-forget reminder for Cursor's `before*` events when
-            # the host is about to surface its own sandbox dialog. SC's
-            # popup shows alongside Cursor's IDE dialog (kind=approval,
-            # supportsExternalApproval=false → "回到 Cursor" focus button).
-            # No response is read; SC's poll surfaces the popup and the
-            # 1h staleness sweep cleans up orphans.
-            ensure_dirs()
-            session_id = str(payload.get("session_id") or "")
-            cwd = str(payload.get("cwd") or os.getcwd())
-            tool_input = payload.get("tool_input") or {}
-            now = time.time()
-            seed = "cursor-approval|{}|{}".format(session_id or "anon", now)
-            request_id = "cursor-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
-            request_path = os.path.join(PENDING, "{}.json".format(request_id))
-            tool_label = {
-                "beforeShellExecution": "Shell",
-                "beforeMCPExecution": "MCP",
-                "beforeReadFile": "ReadFile",
-            }.get(source_event, "Cursor Tool")
-            summary = stable_summary({"tool_name": tool_label, "tool_input": tool_input})
-            match_value = extract_match_value({"tool_name": tool_label, "tool_input": tool_input})
-            request = {
-                "id": request_id,
-                "schemaVersion": SCHEMA_VERSION,
-                "providerId": provider_id,
-                "kind": "approval",
-                "sessionId": session_id,
-                "toolName": tool_label,
-                "projectPath": cwd,
-                "summary": summary,
-                "matchValue": match_value,
-                "receivedAt": now,
-            }
-            serialized, truncated = serialize_tool_input(tool_input)
-            if serialized is not None:
-                request["toolInputJSON"] = serialized
-                request["toolInputTruncated"] = truncated
-            tmp = request_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(request, f, ensure_ascii=False, indent=2, sort_keys=True)
-            os.replace(tmp, request_path)
-
         def write_stop_request(payload, provider_id):
             # Stop hook is fire-and-forget: write the pending file, exit 0.
             # No response is ever read. Swift's poll loop surfaces the toast
@@ -1386,18 +1343,23 @@ enum ClaudePermissionHook {
                 # we tried to surface the dialog Cursor would ignore it.
                 return 0
             elif event_name in ("beforeShellExecution", "beforeMCPExecution", "beforeReadFile"):
-                cursor_tool_input = payload.get("tool_input") or {}
-                will_surface_dialog = bool(cursor_tool_input.get("sandbox")) if isinstance(cursor_tool_input, dict) else False
-                if will_surface_dialog:
-                    # Cursor will pop its own sandbox dialog; mirror with
-                    # an SC reminder + emit `permission: ask` so Cursor's
-                    # dialog drives the actual decision. SC popup is a
-                    # focus-button reminder, not a decision pipeline.
-                    write_cursor_reminder(payload, provider_id, event_name)
-                    print('{"permission":"ask"}', flush=True)
-                else:
-                    # Auto-allow path: don't surface SC; let Cursor proceed.
-                    print('{"permission":"allow"}', flush=True)
+                # Cursor's before* events: SC is a pure OBSERVER here, never a
+                # gatekeeper. Three facts (verified against Cursor docs + the
+                # official forum, 2026-06) drive this:
+                #   1. `sandbox` lives at the TOP LEVEL of the flat Cursor
+                #      payload (NOT under tool_input), and only describes the
+                #      execution environment — it is NOT a "Cursor will ask the
+                #      user" signal. There is no reliable hook signal for that.
+                #   2. `permission: "ask"` is a confirmed Cursor bug: it is
+                #      ignored on every shell-execution path, so emitting it
+                #      does nothing.
+                #   3. Emitting `permission: "allow"` would GRANT permission on
+                #      the user's behalf, overriding Cursor's own approval UI
+                #      AND any sibling guard hooks (r2c, audit scripts) in the
+                #      same event chain. That is unsafe and was the real bug.
+                # So stay neutral: emit nothing (no permission verdict) and
+                # write no pending. Cursor + the user's other hooks decide.
+                debug_log("cursor before* event — neutral pass-through, no verdict")
                 return 0
             # Three events feed Session Cove: legacy PermissionRequest
             # (yes/deny/always), PreToolUse for AskUserQuestion-style typed
@@ -1454,6 +1416,15 @@ enum ClaudePermissionHook {
                 is_question_event = True
 
             if not is_question_event:
+                # Empty tool_input ⇒ nothing reviewable. The approval card
+                # would degrade to the generic "<tool> is asking for
+                # permission." summary with an empty {} detail panel — pure
+                # noise. Auto-allow instead of surfacing a popup. Narrow on
+                # purpose: a non-empty (even unrecognized) input still renders
+                # real JSON, so those keep surfacing.
+                if isinstance(tool_input, dict) and not tool_input:
+                    print_allow(provider_id)
+                    return 0
                 if match_allowlist(payload, provider_id):
                     print_allow(provider_id)
                     return 0

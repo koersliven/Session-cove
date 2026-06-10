@@ -11,6 +11,14 @@ enum TerminalKind: String, Codable, CaseIterable, Sendable {
     case alacritty
     case kitty
     case wezterm
+    /// IDE-hosted integrated terminals. These are Electron apps whose
+    /// integrated terminal can't be scripted down to a specific tty/tab, so
+    /// they only support "activate the IDE window" focus (no launch). They
+    /// are deliberately NOT in `TerminalDetector.supportedKinds` — we never
+    /// launch a fresh agent into an IDE terminal, only refocus an existing
+    /// session that already lives inside one.
+    case vscode
+    case cursor
 
     var displayName: String {
         switch self {
@@ -21,6 +29,8 @@ enum TerminalKind: String, Codable, CaseIterable, Sendable {
         case .alacritty:    return "Alacritty"
         case .kitty:        return "kitty"
         case .wezterm:      return "WezTerm"
+        case .vscode:       return "VS Code"
+        case .cursor:       return "Cursor"
         }
     }
 
@@ -33,6 +43,8 @@ enum TerminalKind: String, Codable, CaseIterable, Sendable {
         case .alacritty:    return "org.alacritty"
         case .kitty:        return "net.kovidgoyal.kitty"
         case .wezterm:      return "com.github.wez.wezterm"
+        case .vscode:       return "com.microsoft.VSCode"
+        case .cursor:       return "com.todesktop.230313mzl4w4u92"
         }
     }
 
@@ -48,6 +60,8 @@ enum TerminalKind: String, Codable, CaseIterable, Sendable {
         case .alacritty:    return "/opt/homebrew/bin/alacritty"
         case .kitty:        return "/Applications/kitty.app/Contents/MacOS/kitty"
         case .wezterm:      return "/opt/homebrew/bin/wezterm"
+        case .vscode:       return nil // focus-only (activate IDE window)
+        case .cursor:       return nil // focus-only (activate IDE window)
         }
     }
 }

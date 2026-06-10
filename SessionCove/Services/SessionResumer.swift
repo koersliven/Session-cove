@@ -421,6 +421,12 @@ struct SessionResumer {
         case .wezterm:      return WezTermAdapter()
         case .alacritty:    return AlacrittyAdapter()
         case .warp:         return nil  // intentional — see WarpAdapter
+        // IDE integrated terminals (VS Code / Cursor): focus = activate the
+        // IDE window. Without this, a session running in an IDE terminal
+        // falls through every real-terminal adapter and `launchNewSession`
+        // spawns a duplicate window. The IDE adapter brings the user back to
+        // the existing window instead.
+        case .vscode, .cursor: return IDEWindowAdapter(kind: kind)
         }
     }
 }

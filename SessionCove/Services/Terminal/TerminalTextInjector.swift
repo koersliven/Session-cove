@@ -277,6 +277,10 @@ enum TerminalTextInjector {
         case .wezterm:      return WezTermAdapter()
         case .alacritty:    return AlacrittyAdapter()
         case .warp:         return nil
+        // IDE integrated terminals have no scriptable text-injection path;
+        // their host app owns the prompt. Returning nil falls back to the
+        // POSIX tty write in the caller (or no-op).
+        case .vscode, .cursor: return nil
         }
     }
 

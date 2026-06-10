@@ -132,6 +132,11 @@ enum TerminalDetector {
         case .wezterm:      return WezTermAdapter()
         case .alacritty:    return AlacrittyAdapter()
         case .warp:         return nil  // intentional — see WarpAdapter
+        // IDE integrated terminals are never a *launch* target — we don't
+        // spawn a fresh agent inside VS Code / Cursor. Returning nil lets the
+        // resolve cascade fall through to a real terminal. Focus of an
+        // existing IDE session is handled by `SessionResumer.adapterFor`.
+        case .vscode, .cursor: return nil
         }
     }
 
@@ -206,6 +211,24 @@ enum TerminalDetector {
     /// across releases (`iTerm2` vs `iterm2`, etc.).
     private static func matchTerminal(commandLine: String) -> TerminalKind? {
         let trimmed = commandLine.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // IDE-hosted integrated terminals first. These are Electron apps whose
+        // process command line is a deep path inside the .app bundle (e.g.
+        // `/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper
+        // (Plugin).app/.../Code Helper (Plugin)` or `/Applications/Cursor.app/
+        // .../Cursor Helper`). The bundle name contains spaces, so the
+        // first-token-before-space heuristic below would misclassify it —
+        // match on the `.app` bundle substring instead. Order matters: Cursor
+        // is a VS Code fork, but its bundle is `Cursor.app`, not
+        // `Visual Studio Code.app`, so the two never collide.
+        let lowered = trimmed.lowercased()
+        if lowered.contains("visual studio code.app") || lowered.contains("/vscode") {
+            return .vscode
+        }
+        if lowered.contains("/cursor.app/") || lowered.contains("cursor helper") {
+            return .cursor
+        }
+
         // `command=` returns "executable args ...". Take the path before
         // the first space; this misclassifies paths containing spaces, but
         // /Applications and /opt/homebrew install locations don't.
