@@ -5,43 +5,41 @@ struct AboutTab: View {
     @ObservedObject private var updater = UpdateChecker.shared
 
     var body: some View {
-        VStack(spacing: 16) {
-            Spacer().frame(height: 12)
+        ScrollView {
+            VStack(spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage ?? NSImage(named: "NSApplicationIcon") ?? NSImage())
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 56, height: 56)
 
-            Image(nsImage: NSApp.applicationIconImage ?? NSImage(named: "NSApplicationIcon") ?? NSImage())
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 64, height: 64)
+                VStack(spacing: 4) {
+                    Text("Session Cove")
+                        .font(.title3)
+                        .bold()
+                    Text("v\(versionString)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
-            VStack(spacing: 4) {
-                Text("Session Cove")
-                    .font(.title2)
-                    .bold()
-                Text("v\(versionString)")
+                Text("Inspired by ping-island & Dave the Diver")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                HStack(spacing: 18) {
+                    Link("GitHub", destination: URL(string: "https://github.com/koersliven/Session-cove")!)
+                    Link("Issues", destination: URL(string: "https://github.com/koersliven/Session-cove/issues")!)
+                    Link("Star", destination: URL(string: "https://github.com/koersliven/Session-cove")!)
+                }
+
+                Divider()
+
+                updateSection
+
+                diagnosticSection
             }
-
-            Text("Inspired by ping-island & Dave the Diver")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 18) {
-                Link("GitHub", destination: URL(string: "https://github.com/koersliven/Session-cove")!)
-                Link("Issues", destination: URL(string: "https://github.com/koersliven/Session-cove/issues")!)
-                Link("Star", destination: URL(string: "https://github.com/koersliven/Session-cove")!)
-            }
-
-            Spacer()
-
-            updateSection
-
-            diagnosticSection
-
-            Spacer().frame(height: 12)
+            .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 
     // MARK: - Diagnostics
@@ -156,11 +154,14 @@ struct AboutTab: View {
             }
 
             if let notes, !notes.isEmpty {
-                Text(notes.prefix(200) + (notes.count > 200 ? "..." : ""))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                DisclosureGroup("更新日志") {
+                    Text(notes)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .font(.caption)
             }
 
             HStack(spacing: 12) {
