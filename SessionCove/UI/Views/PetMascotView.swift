@@ -67,7 +67,8 @@ struct PetMascotView: View {
                         scale: .pet,
                         grounded: false,
                         providerPrefix: viewModel.activePetProviderId,
-                        customImage: customPetImage
+                        customImage: customPetImage,
+                        overrideSize: CGSize(width: petSize, height: petSize)
                     )
                         .offset(y: isDragging ? 0 : verticalOffset(time, state: state))
                         .scaleEffect(breathScale(time))

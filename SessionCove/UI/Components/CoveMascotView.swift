@@ -43,15 +43,23 @@ struct CoveMascotView: View {
     /// sprites. Rendered aspect-fit so non-square uploads aren't distorted.
     var customImage: NSImage? = nil
 
+    /// When non-nil, overrides `scale.size` for rendering. Used by Pet mode
+    /// to honour the user's pet-size slider setting.
+    var overrideSize: CGSize? = nil
+
+    private var effectiveSize: CGSize {
+        overrideSize ?? scale.size
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             mascotContent
-                .frame(width: scale.size.width, height: scale.size.height)
+                .frame(width: effectiveSize.width, height: effectiveSize.height)
 
             if grounded {
                 Ellipse()
                     .fill(PixelPalette.ink.opacity(0.18))
-                    .frame(width: scale.size.width * 0.6, height: 4)
+                    .frame(width: effectiveSize.width * 0.6, height: 4)
                     .offset(y: 2)
             }
         }

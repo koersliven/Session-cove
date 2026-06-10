@@ -131,7 +131,7 @@ final class PetWindowController: NSWindowController, NSWindowDelegate, CoveModeW
     }
 
     private func applyPetSize() {
-        guard let panel = panel, let hosting = panel.contentViewController?.view else { return }
+        guard let panel = panel, let hosting = hostingView else { return }
         let newSize = PetPlacementStrategy.petSize
 
         // Keep the pet centred at its current position
