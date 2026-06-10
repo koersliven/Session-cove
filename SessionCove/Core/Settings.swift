@@ -16,6 +16,14 @@ extension Notification.Name {
     /// `WindowManager` can diff old vs new and run the per-provider
     /// install / uninstall side effects.
     static let coveEnabledProvidersDidChange = Notification.Name("coveEnabledProvidersDidChange")
+
+    /// Posted when the user uploads or clears the custom pet image. The pet
+    /// view reloads its sprite from the new path on receipt.
+    static let covePetImageDidChange = Notification.Name("covePetImageDidChange")
+
+    /// Posted when the user drags the pet-size slider. PetWindowController
+    /// resizes the NSPanel on receipt.
+    static let covePetSizeDidChange = Notification.Name("covePetSizeDidChange")
 }
 
 /// Centralized user-facing settings store, backed by `UserDefaults`.
@@ -74,7 +82,14 @@ final class CoveSettings: ObservableObject {
         case approvalExpandByDefault = "coveApprovalExpandByDefault"
         case silenceCompletionWhenTerminalFrontmost = "coveSilenceCompletionWhenTerminalFrontmost"
         case enabledProviders = "coveEnabledProviders"
+        case customPetImagePath = "coveCustomPetImagePath"
+        case petDisplaySize    = "covePetDisplaySize"
     }
+
+    /// Allowed range for `petDisplaySize`. 36pt matches the old 48pt sprite
+    /// with a 0.75× scale; 200pt gives room for detailed custom images without
+    /// ballooning past reasonable desktop real-estate.
+    nonisolated static let petSizeRange: ClosedRange<Double> = 36.0...200.0
 
     /// Allowed range for `contentFontSize`. Exposed for PR 2's slider.
     static let fontSizeRange: ClosedRange<Double> = 11.0...17.0
@@ -234,6 +249,50 @@ final class CoveSettings: ObservableObject {
         }
     }
 
+    /// Absolute path to a user-uploaded image used as the Pet-mode mascot.
+    /// `nil` (default) = use the built-in sprites. The file lives under
+    /// `~/.session-cove/` (copied there by `CustomPetImageStore` on upload),
+    /// and the path carries a timestamp so each upload changes the value —
+    /// that drives the pet view's reload + cache invalidation. Only the Pet
+    /// mode renders it; all other mascot call sites keep the built-in art.
+    @Published var customPetImagePath: String? {
+        didSet {
+            guard !bootstrap else { return }
+            if let path = customPetImagePath, !path.isEmpty {
+                defaults.set(path, forKey: Key.customPetImagePath.rawValue)
+            } else {
+                defaults.removeObject(forKey: Key.customPetImagePath.rawValue)
+            }
+            if oldValue != customPetImagePath {
+                postNotification(.covePetImageDidChange)
+            }
+        }
+    }
+
+    /// Non-isolated read of pet size — safe for `Sendable` contexts and
+    /// `nonisolated` SwiftUI view bodies that can't hop to `@MainActor`.
+    /// Mirrors the persisted value (or the 48pt default) without going
+    /// through the `@Published` property.
+    nonisolated static var currentPetSize: Double {
+        let raw = UserDefaults.standard.double(forKey: Key.petDisplaySize.rawValue)
+        return raw > 0 ? raw.clamped(to: petSizeRange) : 48.0
+    }
+
+    /// Pet floating window display size in points (width = height).
+    /// Default 48pt. Clamped to `petSizeRange` on write.
+    @Published var petDisplaySize: Double {
+        didSet {
+            guard !bootstrap else { return }
+            let clamped = petDisplaySize.clamped(to: Self.petSizeRange)
+            if clamped != petDisplaySize {
+                petDisplaySize = clamped
+                return
+            }
+            persist(petDisplaySize, .petDisplaySize)
+            postNotification(.covePetSizeDidChange)
+        }
+    }
+
     // MARK: - Internals
 
     private let defaults: UserDefaults
@@ -337,6 +396,15 @@ final class CoveSettings: ObservableObject {
             self.enabledProviders = set
         } else {
             self.enabledProviders = ["claude"]
+        }
+
+        self.customPetImagePath = defaults.string(forKey: Key.customPetImagePath.rawValue)
+
+        if defaults.object(forKey: Key.petDisplaySize.rawValue) != nil {
+            self.petDisplaySize = defaults.double(forKey: Key.petDisplaySize.rawValue)
+                .clamped(to: Self.petSizeRange)
+        } else {
+            self.petDisplaySize = 48.0
         }
 
         bootstrap = false

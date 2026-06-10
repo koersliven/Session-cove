@@ -42,6 +42,14 @@ final class PetWindowController: NSWindowController, NSWindowDelegate, CoveModeW
         super.init(window: panel)
         panel.delegate = self
 
+        // Resize the NSPanel when user drags the pet-size slider in Settings
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("covePetSizeDidChange"),
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.applyPetSize()
+        }
+
         // Seed strategy anchor from restored value so the first .pet update
         // honors it (otherwise it would fall back to top-center).
         strategy.setInitialAnchor(restoredAnchor)
@@ -120,6 +128,20 @@ final class PetWindowController: NSWindowController, NSWindowDelegate, CoveModeW
         panel.setFrame(result.frame, display: true, animate: false)
         hostingView?.frame = NSRect(origin: .zero, size: result.frame.size)
         panel.contentView?.frame = NSRect(origin: .zero, size: result.frame.size)
+    }
+
+    private func applyPetSize() {
+        guard let panel = panel, let hosting = panel.contentViewController?.view else { return }
+        let newSize = PetPlacementStrategy.petSize
+
+        // Keep the pet centred at its current position
+        let oldOrigin = panel.frame.origin
+        let dx = (panel.frame.width - newSize.width) / 2
+        let dy = (panel.frame.height - newSize.height) / 2
+        let newOrigin = NSPoint(x: oldOrigin.x + dx, y: oldOrigin.y + dy)
+
+        hosting.frame = NSRect(origin: .zero, size: newSize)
+        panel.setFrame(NSRect(origin: newOrigin, size: newSize), display: true, animate: true)
     }
 
     func savePetAnchor() {

@@ -16,34 +16,21 @@ struct SessionResumer {
         print("[SessionResumer] resume called for session: \(session.id) project: \(session.projectPath)")
         DiagnosticLogger.shared.log("resume: \(session.id) at \(session.projectPath)", module: "SessionResumer")
 
-        // Everything below — TTY lookup, ancestor walk (up to 128 ps calls),
-        // adapter focus/launch (osascript or kitty/wezterm CLI) — must stay
-        // off the main thread. Running these on main under @MainActor caused
-        // the "spinner forever" hang: ~50 ps invocations + an osascript that
-        // can block on a hidden TCC dialog never let the RunLoop spin.
-        DispatchQueue.global(qos: .userInitiated).async {
-            let lookup = findSessionTTY(sessionId: session.id, projectPath: session.projectPath)
-            if let lookup {
-                print("[SessionResumer] TTY lookup result: tty=\(lookup.tty) pid=\(lookup.pid)")
-            } else {
-                print("[SessionResumer] TTY lookup result: nil")
-            }
-
-            if let lookup, focusExistingSession(tty: lookup.tty, pid: lookup.pid) {
-                return
-            }
-            // No TTY found, or TTY not present in any known terminal —
-            // open a fresh window with the provider's resume command
-            // instead of leaving the user staring at an unrelated
-            // front-most app. Provider attribution comes from the
-            // session record itself so a future Qoder/Codex resume
-            // launches the right binary.
-            launchNewSession(
-                sessionId: session.id,
-                projectPath: session.projectPath,
-                providerId: session.providerId
-            )
-        }
+        // Delegate to `focusOrLaunch`, which is a strict superset of the old
+        // resume logic: same TTY lookup + ancestor-adapter focus, but with two
+        // extra fallbacks before giving up and launching a new window —
+        // `activateTerminalForPid` (activate the owning app even when we can't
+        // target the exact tty) and a ProcessDetector cwd check. Those
+        // fallbacks are what make IDE-integrated-terminal sessions (VS Code /
+        // Cursor) refocus instead of spawning a duplicate window. The session
+        // list's "open" used to call the leaner path and skipped them, which
+        // is why it still opened a new terminal after the completion-toast
+        // path was fixed. Routing both through one function keeps them in sync.
+        focusOrLaunch(
+            sessionId: session.id,
+            projectPath: session.projectPath,
+            providerId: session.providerId
+        )
     }
 
     /// Used by the completion-toast "打开 session" button when the

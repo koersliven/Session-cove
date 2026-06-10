@@ -1,8 +1,14 @@
 import SwiftUI
+import Combine
 
 struct PetMascotView: View {
     @Bindable var viewModel: CoveViewModel
     @State private var isDragging = false
+    /// Loaded once per path change (not per frame) so disk I/O stays off the
+    /// 30fps render path. Seeded by the `onReceive` below, which fires with
+    /// the current `customPetImagePath` value on subscription.
+    @State private var customPetImage: NSImage?
+    @State private var petSize: Double = CoveSettings.currentPetSize
 
     private var mascotState: PixelMascotState {
         // Highest priority: drag + permission attention. Pet micro
@@ -60,7 +66,8 @@ struct PetMascotView: View {
                         state: state,
                         scale: .pet,
                         grounded: false,
-                        providerPrefix: viewModel.activePetProviderId
+                        providerPrefix: viewModel.activePetProviderId,
+                        customImage: customPetImage
                     )
                         .offset(y: isDragging ? 0 : verticalOffset(time, state: state))
                         .scaleEffect(breathScale(time))
@@ -77,7 +84,13 @@ struct PetMascotView: View {
             }
             .allowsHitTesting(false)
         }
-        .frame(width: 48, height: 48)
+        .frame(width: petSize, height: petSize)
+        .onReceive(CoveSettings.shared.$customPetImagePath) { newPath in
+            customPetImage = MascotImage.loadCustom(path: newPath)
+        }
+        .onReceive(CoveSettings.shared.$petDisplaySize) { newSize in
+            petSize = newSize
+        }
     }
 
     private func verticalOffset(_ time: TimeInterval, state: PixelMascotState) -> CGFloat {

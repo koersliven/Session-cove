@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct DisplayTab: View {
     @EnvironmentObject var settings: CoveSettings
@@ -44,9 +45,75 @@ struct DisplayTab: View {
                     }
                 }
                 .pickerStyle(.menu)
+
+                LabeledContent("尺寸") {
+                    HStack(spacing: 8) {
+                        Slider(value: $settings.petDisplaySize, in: CoveSettings.petSizeRange, step: 2)
+                            .frame(width: 120)
+                        Text("\(Int(settings.petDisplaySize))pt")
+                            .font(.caption.monospaced())
+                            .frame(width: 32, alignment: .trailing)
+                    }
+                }
+
+                LabeledContent("自定义形象") {
+                    HStack(spacing: 10) {
+                        customPetPreview
+                        Button("上传图片") { pickCustomPetImage() }
+                        if settings.customPetImagePath != nil {
+                            Button("恢复默认") { clearCustomPetImage() }
+                        }
+                    }
+                }
+
+                Text("上传任意图片作为悬浮宠物。会按图片比例自动适配，不会拉伸变形；透明 PNG 效果最佳。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Custom pet image
+
+    @ViewBuilder
+    private var customPetPreview: some View {
+        if let path = settings.customPetImagePath,
+           let image = MascotImage.loadCustom(path: path) {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.secondary.opacity(0.12))
+                )
+        } else {
+            Image(systemName: "pawprint.circle")
+                .font(.system(size: 22))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+        }
+    }
+
+    private func pickCustomPetImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .tiff, .bmp, .heic, .image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "选择"
+        panel.message = "选择一张图片作为悬浮宠物形象"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if let saved = CustomPetImageStore.save(from: url) {
+            settings.customPetImagePath = saved
+        }
+    }
+
+    private func clearCustomPetImage() {
+        settings.customPetImagePath = nil
+        CustomPetImageStore.clearFiles()
     }
 
     private struct ScreenOption: Identifiable {

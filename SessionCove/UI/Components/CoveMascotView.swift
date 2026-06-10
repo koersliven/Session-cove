@@ -36,6 +36,13 @@ struct CoveMascotView: View {
     /// running Cursor or Qoder.
     var providerPrefix: String? = nil
 
+    /// User-uploaded custom mascot image. When non-nil it overrides ALL
+    /// state/provider art (the custom image is a single static picture, so
+    /// every animation state shows the same image). Only Pet mode passes
+    /// this; every other call site leaves it nil and keeps the built-in
+    /// sprites. Rendered aspect-fit so non-square uploads aren't distorted.
+    var customImage: NSImage? = nil
+
     var body: some View {
         ZStack(alignment: .bottom) {
             mascotContent
@@ -52,7 +59,15 @@ struct CoveMascotView: View {
 
     @ViewBuilder
     private var mascotContent: some View {
-        if let image = mascotImage {
+        if let customImage {
+            // User photo / logo — smooth interpolation reads better than the
+            // nearest-neighbor used for pixel-art sprites. Aspect-fit keeps
+            // the original proportions inside the mascot box.
+            Image(nsImage: customImage)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+        } else if let image = mascotImage {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.none)

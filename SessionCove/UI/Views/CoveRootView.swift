@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CoveRootView: View {
     @Bindable var viewModel: CoveViewModel
+    @State private var petSize: Double = CoveSettings.currentPetSize
     var onFrameSizeChange: ((CoveFrameSize) -> Void)? = nil
 
     var body: some View {
@@ -19,6 +20,9 @@ struct CoveRootView: View {
                     onFrameSizeChange?(.ping)
                 }
             }
+            .onReceive(CoveSettings.shared.$petDisplaySize) { newSize in
+                petSize = newSize
+            }
     }
 
     @ViewBuilder
@@ -26,7 +30,7 @@ struct CoveRootView: View {
         switch viewModel.frameSize {
         case .pet:
             PetMascotView(viewModel: viewModel)
-                .frame(width: 48, height: 48)
+                .frame(width: petSize, height: petSize)
 
         case .compact:
             CompactBarView(viewModel: viewModel)
@@ -80,7 +84,7 @@ struct CoveRootView: View {
             grounded: false,
             providerPrefix: viewModel.activePetProviderId
         )
-            .frame(width: 48, height: 48)
+            .frame(width: petSize, height: petSize)
             .padding(.horizontal, 4)
     }
 

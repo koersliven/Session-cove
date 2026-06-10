@@ -30,7 +30,10 @@ enum PetAnchorGeometry {
 /// on AppKit lifecycle and the placement math is unit-testable in isolation.
 @MainActor
 final class PetPlacementStrategy {
-    nonisolated static let petSize = NSSize(width: 48, height: 48)
+    nonisolated static var petSize: NSSize {
+        let s = CoveSettings.currentPetSize
+        return NSSize(width: s, height: s)
+    }
     /// Width of the ping-card content area inside the .ping panel. Total
     /// panel width = `petSize.width + pingCardWidth`. Bumped from 340 to
     /// 412 so the chevron capsule (now Chinese 详情 label + icon + arrow)

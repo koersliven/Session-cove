@@ -57,16 +57,40 @@ enum MascotImage {
         return loadCropped("claude_\(suffix)")
     }
 
-    private static func loadCropped(_ name: String) -> NSImage? {
-        guard let url = Bundle.module.url(forResource: name, withExtension: "png"),
-              let image = NSImage(contentsOf: url),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let bbox = alphaBoundingBox(in: cgImage),
-              let cropped = cgImage.cropping(to: bbox) else {
+    /// Load a user-supplied custom pet image from an absolute file path.
+    /// Returns nil when the path is empty/missing or the file can't be
+    /// decoded as an image (caller falls back to the built-in sprites).
+    /// Same alpha-crop treatment as bundled sprites so PNGs with transparent
+    /// margins sit tight; fully opaque photos crop to their full frame
+    /// (no-op) and render as-is.
+    static func loadCustom(path: String?) -> NSImage? {
+        guard let path, !path.isEmpty,
+              FileManager.default.fileExists(atPath: path) else {
             return nil
         }
+        return loadCropped(fromURL: URL(fileURLWithPath: path))
+    }
 
-        return NSImage(cgImage: cropped, size: NSSize(width: bbox.width, height: bbox.height))
+    private static func loadCropped(_ name: String) -> NSImage? {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "png") else {
+            return nil
+        }
+        return loadCropped(fromURL: url)
+    }
+
+    private static func loadCropped(fromURL url: URL) -> NSImage? {
+        guard let image = NSImage(contentsOf: url),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        // Crop to the alpha bounding box when the image has transparency.
+        // For opaque images every pixel is above the alpha threshold, so the
+        // bbox is the full frame and the result is identical to the source.
+        if let bbox = alphaBoundingBox(in: cgImage),
+           let cropped = cgImage.cropping(to: bbox) {
+            return NSImage(cgImage: cropped, size: NSSize(width: bbox.width, height: bbox.height))
+        }
+        return image
     }
 
     private static func alphaBoundingBox(in image: CGImage) -> CGRect? {
