@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HarborMapOverviewView: View {
     @Bindable var viewModel: CoveViewModel
+    @ObservedObject private var updateChecker = UpdateChecker.shared
     var showsHeader: Bool = true
     /// Compact mode: hides the session dock and shrinks island nodes so the
     /// view fits inside the notch peeking panel (480×~176pt body area). The
@@ -86,6 +87,37 @@ struct HarborMapOverviewView: View {
                         .fill(.green.opacity(0.12))
                         .overlay(Capsule().stroke(.green.opacity(0.3), lineWidth: 1))
                 )
+            }
+
+            Button {
+                Task { @MainActor in
+                    DailyReportWindowController.shared.show(viewModel: viewModel)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "water.waves")
+                        .font(.system(size: 9))
+                    Text("日报")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                }
+                .foregroundStyle(viewModel.hasUnreadReport ? .cyan : .white.opacity(0.7))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(viewModel.hasUnreadReport ? Color.cyan.opacity(0.15) : Color.white.opacity(0.06))
+                        .overlay(Capsule().stroke(
+                            viewModel.hasUnreadReport ? Color.cyan.opacity(0.4) : Color.white.opacity(0.15),
+                            lineWidth: 1
+                        ))
+                )
+            }
+            .buttonStyle(.plain)
+
+            if case .available(let version, _, _) = updateChecker.state, !updateChecker.dismissed {
+                updateBadge(version: version)
+            } else if case .downloading(let progress) = updateChecker.state {
+                downloadingBadge(progress: progress)
             }
 
             if viewModel.deferredRequestId != nil {
@@ -434,6 +466,66 @@ struct HarborMapOverviewView: View {
                 onTap: { tapItem(item) },
                 onDelete: { viewModel.requestDeleteWorkspace(id: ws.id) }
             )
+        }
+    }
+
+    @ViewBuilder
+    private func updateBadge(version: String) -> some View {
+        Button {
+            if case .available(_, let url, let notes) = updateChecker.state {
+                showUpdateAlert(version: version, url: url, notes: notes)
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 8))
+                Text("更新")
+                    .font(.system(size: 8, weight: .black, design: .monospaced))
+            }
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(.orange.opacity(0.15))
+                    .overlay(Capsule().stroke(.orange.opacity(0.4), lineWidth: 1))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func downloadingBadge(progress: Double) -> some View {
+        HStack(spacing: 3) {
+            ProgressView()
+                .scaleEffect(0.5)
+                .frame(width: 10, height: 10)
+            Text("\(Int(progress * 100))%")
+                .font(.system(size: 8, weight: .black, design: .monospaced))
+        }
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(.orange.opacity(0.12)))
+    }
+
+    private func showUpdateAlert(version: String, url: URL, notes: String?) {
+        let alert = NSAlert()
+        alert.messageText = "Session Cove v\(version) 可用"
+        alert.informativeText = notes ?? "有新版本可以更新。"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "立即更新")
+        alert.addButton(withTitle: "稍后再说")
+        alert.addButton(withTitle: "不再提醒")
+
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            UpdateChecker.shared.downloadAndInstall(dmgURL: url)
+        case .alertThirdButtonReturn:
+            UpdateChecker.shared.dismiss()
+        default:
+            break
         }
     }
 

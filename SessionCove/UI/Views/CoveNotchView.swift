@@ -172,6 +172,7 @@ struct CoveNotchView: View {
 
 private struct AdaptiveHeader: View {
     @Bindable var viewModel: CoveViewModel
+    @ObservedObject private var updateChecker = UpdateChecker.shared
 
     var body: some View {
         HStack(spacing: spacing) {
@@ -191,6 +192,14 @@ private struct AdaptiveHeader: View {
 
             if viewModel.notchStatus == .peeking, viewModel.activeSessions > 0 {
                 activeBadge
+            }
+
+            if case .available = updateChecker.state, !updateChecker.dismissed, viewModel.notchStatus != .opened {
+                updateBadge
+            }
+
+            if viewModel.hasUnreadReport, viewModel.notchStatus != .opened {
+                reportBadge
             }
 
             if viewModel.deferredRequestId != nil, viewModel.notchStatus != .opened {
@@ -277,6 +286,68 @@ private struct AdaptiveHeader: View {
             .background(
                 Capsule()
                     .fill(PixelPalette.alert.opacity(0.15))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var reportBadge: some View {
+        Button {
+            Task { @MainActor in
+                DailyReportWindowController.shared.show(viewModel: viewModel)
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "water.waves")
+                    .font(.system(size: 7))
+                Text("日报")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+            }
+            .foregroundStyle(.cyan)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(.cyan.opacity(0.15))
+                    .overlay(Capsule().stroke(.cyan.opacity(0.35), lineWidth: 1))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var updateBadge: some View {
+        Button {
+            if case .available(_, let url, let notes) = updateChecker.state {
+                let alert = NSAlert()
+                alert.messageText = "Session Cove 有新版本"
+                alert.informativeText = notes ?? "有新版本可以更新。"
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "立即更新")
+                alert.addButton(withTitle: "稍后再说")
+                alert.addButton(withTitle: "不再提醒")
+                let response = alert.runModal()
+                switch response {
+                case .alertFirstButtonReturn:
+                    UpdateChecker.shared.downloadAndInstall(dmgURL: url)
+                case .alertThirdButtonReturn:
+                    UpdateChecker.shared.dismiss()
+                default: break
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 7))
+                Text("更新")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+            }
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(.orange.opacity(0.15))
+                    .overlay(Capsule().stroke(.orange.opacity(0.35), lineWidth: 1))
             )
         }
         .buttonStyle(.plain)

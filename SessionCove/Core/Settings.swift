@@ -84,6 +84,8 @@ final class CoveSettings: ObservableObject {
         case enabledProviders = "coveEnabledProviders"
         case customPetImagePath = "coveCustomPetImagePath"
         case petDisplaySize    = "covePetDisplaySize"
+        case dailyReportEnabled = "coveDailyReportEnabled"
+        case dailyReportTime    = "coveDailyReportTime"
     }
 
     /// Allowed range for `petDisplaySize`. 36pt matches the old 48pt sprite
@@ -293,6 +295,21 @@ final class CoveSettings: ObservableObject {
         }
     }
 
+    @Published var dailyReportEnabled: Bool {
+        didSet {
+            guard !bootstrap else { return }
+            persist(dailyReportEnabled, .dailyReportEnabled)
+        }
+    }
+
+    /// Minutes since midnight (e.g. 1200 = 20:00). Default 20:00.
+    @Published var dailyReportTime: Int {
+        didSet {
+            guard !bootstrap else { return }
+            persist(dailyReportTime, .dailyReportTime)
+        }
+    }
+
     // MARK: - Internals
 
     private let defaults: UserDefaults
@@ -405,6 +422,18 @@ final class CoveSettings: ObservableObject {
                 .clamped(to: Self.petSizeRange)
         } else {
             self.petDisplaySize = 48.0
+        }
+
+        if defaults.object(forKey: Key.dailyReportEnabled.rawValue) != nil {
+            self.dailyReportEnabled = defaults.bool(forKey: Key.dailyReportEnabled.rawValue)
+        } else {
+            self.dailyReportEnabled = true
+        }
+
+        if defaults.object(forKey: Key.dailyReportTime.rawValue) != nil {
+            self.dailyReportTime = defaults.integer(forKey: Key.dailyReportTime.rawValue)
+        } else {
+            self.dailyReportTime = 1200  // 20:00
         }
 
         bootstrap = false

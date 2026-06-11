@@ -80,6 +80,39 @@ struct GeneralTab: View {
                 }
             }
 
+            Section("潮汐日报") {
+                Toggle("自动生成日报", isOn: $settings.dailyReportEnabled)
+                if settings.dailyReportEnabled {
+                    LabeledContent("生成时间") {
+                        HStack(spacing: 4) {
+                            Picker("时", selection: Binding(
+                                get: { settings.dailyReportTime / 60 },
+                                set: { settings.dailyReportTime = $0 * 60 + settings.dailyReportTime % 60 }
+                            )) {
+                                ForEach(0..<24, id: \.self) { h in
+                                    Text(String(format: "%02d", h)).tag(h)
+                                }
+                            }
+                            .frame(width: 60)
+                            Text(":")
+                            Picker("分", selection: Binding(
+                                get: { settings.dailyReportTime % 60 },
+                                set: { settings.dailyReportTime = (settings.dailyReportTime / 60) * 60 + $0 }
+                            )) {
+                                ForEach([0, 15, 30, 45], id: \.self) { m in
+                                    Text(String(format: "%02d", m)).tag(m)
+                                }
+                            }
+                            .frame(width: 60)
+                        }
+                        .labelsHidden()
+                    }
+                }
+                Text("每日定时扫描过去 24 小时的会话记录，由 claude 生成工作总结。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("语言") {
                 Picker("界面语言", selection: .constant(0)) {
                     Text("跟随系统").tag(0)

@@ -81,6 +81,24 @@ struct PetMascotView: View {
                             .offset(x: 16, y: -16)
                             .opacity(0.6 + sin(time * .pi * 4) * 0.4)
                     }
+
+                    if viewModel.hasUnreadReport && !isDragging {
+                        Circle()
+                            .fill(.cyan)
+                            .frame(width: 7, height: 7)
+                            .offset(x: -16, y: -16)
+                            .opacity(0.5 + sin(time * .pi * 3) * 0.3)
+                    }
+
+                    if !UpdateChecker.shared.dismissed,
+                       case .available = UpdateChecker.shared.state,
+                       !isDragging {
+                        Circle()
+                            .fill(.orange)
+                            .frame(width: 7, height: 7)
+                            .offset(x: 0, y: -22)
+                            .opacity(0.5 + sin(time * .pi * 3.5) * 0.3)
+                    }
                 }
             }
             .allowsHitTesting(false)

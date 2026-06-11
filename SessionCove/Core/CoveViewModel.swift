@@ -62,6 +62,9 @@ final class CoveViewModel: @unchecked Sendable {
     /// states (`attention`, `dragged`) bypass this entirely — see
     /// `PetMascotView.mascotState`.
     var currentPetMicroState: PixelMascotState?
+    var hasUnreadReport: Bool = false
+    var currentReport: DailyReport?
+    var isGeneratingReport: Bool = false
     private var modeBeforeInterruption: CoveUIMode?
 
     private var watcher: SessionWatcher?
@@ -180,7 +183,32 @@ final class CoveViewModel: @unchecked Sendable {
         startWatching()
         startPeriodicRefresh()
         startPetBehavior()
+        startDailyReportScheduler()
         UpdateChecker.shared.start()
+    }
+
+    @MainActor
+    private func startDailyReportScheduler() {
+        if let existing = DailyReportGenerator.loadTodayReport() {
+            currentReport = existing
+        }
+        DailyReportScheduler.shared.start { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.currentReport = DailyReportGenerator.loadTodayReport()
+                self?.hasUnreadReport = true
+            }
+        }
+    }
+
+    func generateDailyReport() {
+        guard !isGeneratingReport else { return }
+        isGeneratingReport = true
+        Task { @MainActor in
+            let report = await DailyReportGenerator.generate()
+            self.currentReport = report
+            self.isGeneratingReport = false
+            self.hasUnreadReport = false
+        }
     }
 
     /// Pet ambient micro-action scheduler. Cycles every 8-18 seconds while
