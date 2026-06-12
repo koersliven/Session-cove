@@ -25,6 +25,41 @@ struct DailyReport: Codable, Sendable {
         var totalOutput: Int = 0
         var totalCacheRead: Int = 0
         var totalCacheWrite: Int = 0
+        /// Per-model breakdown for cost calculation.
+        var modelBreakdown: [String: ModelUsage] = [:]
+
+        struct ModelUsage: Codable, Sendable {
+            var calls: Int = 0
+            var inputTokens: Int = 0
+            var outputTokens: Int = 0
+        }
+
+        /// Estimated API cost in USD.
+        var estimatedCostUSD: Double {
+            modelBreakdown.reduce(0) { total, entry in
+                total + Self.costFor(input: entry.value.inputTokens, output: entry.value.outputTokens, model: entry.key)
+            }
+        }
+
+        /// Per-model pricing per million tokens. Matches Anthropic API pricing (2026).
+        /// DeepSeek pricing is estimated based on published tier.
+        static func pricing(for model: String) -> (input: Double, output: Double) {
+            if model.contains("Opus") || model.contains("opus") {
+                return (15.0, 75.0)
+            } else if model.contains("Sonnet") || model.contains("sonnet") {
+                return (3.0, 15.0)
+            } else if model.contains("Haiku") || model.contains("haiku") {
+                return (0.80, 4.0)
+            } else if model.contains("DeepSeek") || model.contains("deepseek") {
+                return (1.5, 6.0)
+            }
+            return (5.0, 20.0)
+        }
+
+        static func costFor(input: Int, output: Int, model: String) -> Double {
+            let p = pricing(for: model)
+            return Double(input) / 1_000_000 * p.input + Double(output) / 1_000_000 * p.output
+        }
     }
 }
 

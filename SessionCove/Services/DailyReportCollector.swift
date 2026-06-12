@@ -110,7 +110,7 @@ enum DailyReportCollector {
                 if type == "assistant",
                    let message = json["message"] as? [String: Any],
                    let usage = message["usage"] as? [String: Any] {
-                    let model = message["model"] as? String ?? ""
+                    let model = (message["model"] as? String) ?? ""
                     if model != "<synthetic>" {
                         result.tokenStats.apiCalls += 1
                         let input = (usage["input_tokens"] as? Int ?? 0)
@@ -121,6 +121,14 @@ enum DailyReportCollector {
                         result.tokenStats.totalOutput += output
                         result.tokenStats.totalCacheRead += usage["cache_read_input_tokens"] as? Int ?? 0
                         result.tokenStats.totalCacheWrite += usage["cache_creation_input_tokens"] as? Int ?? 0
+
+                        // Per-model breakdown
+                        let shortModel = modelShortName(model)
+                        var mu = result.tokenStats.modelBreakdown[shortModel] ?? DailyReport.TokenStats.ModelUsage()
+                        mu.calls += 1
+                        mu.inputTokens += input
+                        mu.outputTokens += output
+                        result.tokenStats.modelBreakdown[shortModel] = mu
                     }
                 }
 
@@ -151,6 +159,14 @@ enum DailyReportCollector {
         }
 
         return result
+    }
+
+    private static func modelShortName(_ model: String) -> String {
+        if model.contains("opus") { return "Opus" }
+        if model.contains("sonnet") { return "Sonnet" }
+        if model.contains("haiku") { return "Haiku" }
+        if model.contains("deepseek") { return "DeepSeek" }
+        return model
     }
 
     private static func extractMessageText(from json: [String: Any]) -> String? {

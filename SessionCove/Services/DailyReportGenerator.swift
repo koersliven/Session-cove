@@ -25,6 +25,13 @@ enum DailyReportGenerator {
                 globalStats.totalOutput += s.totalOutput
                 globalStats.totalCacheRead += s.totalCacheRead
                 globalStats.totalCacheWrite += s.totalCacheWrite
+                for (model, usage) in s.modelBreakdown {
+                    var existing = globalStats.modelBreakdown[model] ?? DailyReport.TokenStats.ModelUsage()
+                    existing.calls += usage.calls
+                    existing.inputTokens += usage.inputTokens
+                    existing.outputTokens += usage.outputTokens
+                    globalStats.modelBreakdown[model] = existing
+                }
             }
         }
 
@@ -346,6 +353,25 @@ enum DailyReportGenerator {
         .token-bar .seg.in { background:linear-gradient(90deg, #2a6496, #4a9fd4); }
         .token-bar .seg.cache { background:linear-gradient(90deg, #1a7a4a, #3cba72); }
         .token-bar .seg.out { background:linear-gradient(90deg, #b8860b, #f0c040); }
+        .model-table {
+          margin-top:14px; border-top:1px solid var(--card-border); padding-top:10px;
+        }
+        .model-row {
+          display:flex; align-items:center; gap:12px;
+          padding:4px 8px; font-size:10px;
+        }
+        .model-row .model-name {
+          color:var(--text-bright); font-weight:700; min-width:60px;
+        }
+        .model-row .model-tokens {
+          color:var(--text-dim); min-width:60px; text-align:right;
+        }
+        .model-row .model-pct {
+          color:var(--text-dim); min-width:32px; text-align:right; font-size:9px;
+        }
+        .model-row .model-cost {
+          color:var(--coral); min-width:48px; text-align:right; font-weight:700;
+        }
 
         /* ── Footer ── */
         .seabed {
@@ -567,6 +593,24 @@ enum DailyReportGenerator {
         let freshPct = total > 0 ? freshInput * 100 / total : 0
         let cachePct = total > 0 ? stats.totalCacheRead * 100 / total : 0
         let outputPct = total > 0 ? stats.totalOutput * 100 / total : 0
+        let cost = stats.estimatedCostUSD
+
+        // Per-model rows
+        var modelRows = ""
+        let sortedModels = stats.modelBreakdown.sorted { $0.value.inputTokens + $0.value.outputTokens > $1.value.inputTokens + $1.value.outputTokens }
+        for (model, usage) in sortedModels {
+            let mTotal = usage.inputTokens + usage.outputTokens
+            let mCost = DailyReport.TokenStats.costFor(input: usage.inputTokens, output: usage.outputTokens, model: model)
+            let mPct = total > 0 ? mTotal * 100 / total : 0
+            modelRows += """
+            <div class="model-row">
+            <span class="model-name">\(model)</span>
+            <span class="model-tokens">\(formatNum(mTotal))</span>
+            <span class="model-pct">\(mPct)%</span>
+            <span class="model-cost">$\(String(format:"%.2f", mCost))</span>
+            </div>
+            """
+        }
 
         return """
         <div class="token-dash">
@@ -576,14 +620,18 @@ enum DailyReportGenerator {
         <div class="token-metric"><div class="num" style="color:var(--text-bright)">\(formatNum(total))</div><div class="tag">总 Token</div></div>
         <div class="token-metric"><div class="num" style="color:var(--gold)">\(formatNum(stats.totalOutput))</div><div class="tag">输出 Token</div></div>
         <div class="token-metric"><div class="num" style="color:var(--grass)">\(cacheRate)%</div><div class="tag">缓存命中率</div></div>
+        <div class="token-metric"><div class="num" style="color:var(--coral)">$\(String(format:"%.2f", cost))</div><div class="tag">等效 API 费用</div></div>
         </div>
         <div class="token-bar-wrap">
-        <div class="labels"><span>🆕 新输入 \(formatNum(max(0,freshInput)))</span><span>💾 缓存命中了 \(formatNum(stats.totalCacheRead))</span><span>✍️ 输出 \(formatNum(stats.totalOutput))</span></div>
+        <div class="labels"><span>🆕 新输入 \(formatNum(max(0,freshInput)))</span><span>💾 缓存命中 \(formatNum(stats.totalCacheRead))</span><span>✍️ 输出 \(formatNum(stats.totalOutput))</span></div>
         <div class="token-bar">
         <div class="seg in" style="width:\(max(1,freshPct))%"></div>
         <div class="seg cache" style="width:\(max(1,cachePct))%"></div>
         <div class="seg out" style="width:\(max(1,outputPct))%"></div>
         </div>
+        </div>
+        <div class="model-table">
+        \(modelRows)
         </div>
         </div>
         """
