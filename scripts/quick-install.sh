@@ -91,28 +91,19 @@ if pgrep -q SessionCove 2>/dev/null; then
     done
 fi
 
-# ── 挂载 DMG ──
+# ── 挂载 DMG（用固定路径避免空格问题）──
 echo "📦 正在安装..."
 
-# hdiutil attach 输出示例：
-# /dev/disk4              GUID_partition_scheme
-# /dev/disk4s1            Apple_HFS                       /Volumes/Session Cove
-ATTACH_OUT=$(hdiutil attach "$TMP_DMG" -nobrowse 2>&1)
+MOUNT_DIR="/tmp/session-cove-install-$$"
+rm -rf "$MOUNT_DIR" 2>/dev/null
+mkdir -p "$MOUNT_DIR"
+
+ATTACH_OUT=$(hdiutil attach "$TMP_DMG" -nobrowse -mountpoint "$MOUNT_DIR" 2>&1)
 ATTACH_EXIT=$?
 
 if [ $ATTACH_EXIT -ne 0 ]; then
     echo "❌ DMG 挂载失败"
     echo "   $ATTACH_OUT"
-    rm -f "$TMP_DMG"
-    exit 1
-fi
-
-# 从输出中提取挂载点（最后一行最后一个字段）
-MOUNT_DIR=$(echo "$ATTACH_OUT" | grep -o '/Volumes/[^ ]*' | head -1)
-
-if [ -z "$MOUNT_DIR" ] || [ ! -d "$MOUNT_DIR" ]; then
-    echo "❌ 找不到挂载点"
-    echo "   hdiutil 输出: $ATTACH_OUT"
     rm -f "$TMP_DMG"
     exit 1
 fi
