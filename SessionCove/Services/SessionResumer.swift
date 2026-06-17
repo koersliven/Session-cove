@@ -50,6 +50,7 @@ struct SessionResumer {
             let lookup = findSessionTTY(sessionId: sessionId, projectPath: projectPath)
             if let lookup, focusExistingSession(tty: lookup.tty, pid: lookup.pid) {
                 print("[SessionResumer] focusOrLaunch focused tty=\(lookup.tty)")
+                focusIDEWorkspaceIfNeeded(pid: lookup.pid, projectPath: projectPath)
                 return
             }
 
@@ -282,6 +283,20 @@ struct SessionResumer {
         }
 
         return false
+    }
+
+    /// After successfully focusing an IDE-hosted session, try to open the
+    /// project workspace in the IDE so the user lands in the correct window.
+    private static func focusIDEWorkspaceIfNeeded(pid: Int32, projectPath: String) {
+        guard let kind = TerminalDetector.ancestorTerminal(of: pid) else { return }
+        switch kind {
+        case .vscode, .cursor:
+            if IDEWindowAdapter.focusWorkspace(path: projectPath, kind: kind) {
+                print("[SessionResumer] IDE workspace opened: \(projectPath)")
+            }
+        default:
+            break
+        }
     }
 
     // MARK: - Launch

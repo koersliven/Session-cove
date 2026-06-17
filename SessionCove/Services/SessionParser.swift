@@ -186,15 +186,19 @@ enum SessionParser {
 
     // MARK: - Qoder dialect
 
-    /// Qoder/QoderWork transcript schema:
-    ///   line 0: {type:"session_meta", sessionId, uuid, timestamp, cwd, data:{...}}
-    ///   line N: {type:"progress", data:{command, hookEvent, hookName, type}}
-    ///   line N: {type:"user"|"assistant", data:null}
+    /// Qoder/QoderWork transcript schema (actual, as of qodercli 2026):
     ///
-    /// User/assistant content lives in subsequent encoded fields we don't
-    /// have a fixed shape for yet; for v1 we grab metadata from session_meta
-    /// and the first non-null user/assistant line for `firstMessage` if
-    /// possible. lastModified comes from the file's mtime.
+    ///   {type:"assistant"|"user"|"progress",
+    ///    sessionId:"...", uuid:"...", timestamp:"2026-...Z", cwd:"/path",
+    ///    message:{role:"assistant"|"user",
+    ///             content:[{type:"text", text:"..."}|{type:"tool_use",...}]}}
+    ///
+    /// Every line carries `sessionId`, `cwd`, and `timestamp` at the top
+    /// level.  No `permission-mode` header, `ai-title`, `version`, or
+    /// `gitBranch` is written.  Token usage is also absent.
+    ///
+    /// We extract `sessionId` / `cwd` / `timestamp` from the first line that
+    /// has them, and `firstUserMessage` from the first `type:"user"` line.
     private static func parseQoder(
         filePath: String,
         projectDirEncoded: String,
@@ -223,38 +227,51 @@ enum SessionParser {
         }
         let headerLines = headerString.components(separatedBy: "\n").filter { !$0.isEmpty }
 
-        // Default to filename-derived sessionId so a malformed session_meta
-        // line still produces a usable record.
+        // Fallback: filename-derived sessionId.
         var sessionId = url.deletingPathExtension().lastPathComponent
-        // Qoder filenames sometimes include a "-session" suffix (companion
-        // sidecar files we don't want to confuse with the real transcript)
-        // — the SessionScanner already filters by .jsonl extension; here we
-        // just trim the suffix if it slipped through.
         if sessionId.hasSuffix("-session") {
             sessionId = String(sessionId.dropLast("-session".count))
         }
 
         var cwd: String?
         var timestamp: Date?
+        var firstUserMessage: String?
+
         let isoFormatter = ISO8601DateFormatter()
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let isoFormatterNoFraction = ISO8601DateFormatter()
 
-        for line in headerLines.prefix(20) {
+        for line in headerLines.prefix(40) {
             guard let data = line.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 continue
             }
-            if json["type"] as? String == "session_meta" {
-                if let sid = json["sessionId"] as? String, !sid.isEmpty {
-                    sessionId = sid
-                }
-                if let c = json["cwd"] as? String, !c.isEmpty {
-                    cwd = c
-                }
-                if let ts = json["timestamp"] as? String {
-                    timestamp = isoFormatter.date(from: ts) ?? isoFormatterNoFraction.date(from: ts)
-                }
+
+            let type = json["type"] as? String
+
+            // Grab metadata from the first line that carries sessionId / cwd
+            if sessionId == url.deletingPathExtension().lastPathComponent,
+               let sid = json["sessionId"] as? String, !sid.isEmpty {
+                sessionId = sid
+            }
+            if cwd == nil, let c = json["cwd"] as? String, !c.isEmpty {
+                cwd = c
+            }
+            if timestamp == nil, let ts = json["timestamp"] as? String {
+                timestamp = isoFormatter.date(from: ts)
+                    ?? isoFormatterNoFraction.date(from: ts)
+            }
+
+            // Extract first user text
+            if type == "user", firstUserMessage == nil,
+               let message = json["message"] as? [String: Any],
+               let content = message["content"] as? [[String: Any]] {
+                firstUserMessage = content
+                    .first(where: { ($0["type"] as? String) == "text" })?["text"] as? String
+            }
+
+            // Stop early once we have all fields
+            if cwd != nil, timestamp != nil, firstUserMessage != nil, sessionId != url.deletingPathExtension().lastPathComponent {
                 break
             }
         }
@@ -267,7 +284,7 @@ enum SessionParser {
             projectDirEncoded: projectDirEncoded,
             projectPath: projectPath,
             jsonlPath: filePath,
-            firstUserMessage: nil,
+            firstUserMessage: firstUserMessage,
             aiTitle: nil,
             timestamp: timestamp,
             lastModified: modDate,

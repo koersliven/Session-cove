@@ -3,19 +3,14 @@ import Foundation
 
 /// Adapter for IDE-hosted integrated terminals (VS Code, Cursor).
 ///
-/// These are Electron apps. Their integrated terminal cannot be focused down
-/// to a specific tty/tab via AppleScript the way iTerm/Terminal.app can, so
-/// "focus" degrades to activating the IDE window via its bundle id — which
-/// brings the user back to the window that hosts the running agent session.
-/// That is strictly better than the previous behavior, where an
-/// IDE-integrated-terminal session fell through every real-terminal adapter
-/// and ended up spawning a brand-new iTerm/Terminal window (a duplicate,
-/// detached session).
+/// Electron apps have almost no AppleScript dictionary — `activate` is the
+/// only reliable operation. To focus the correct workspace window we use the
+/// `code` CLI (`code <path> --reuse-window`), which opens the project folder
+/// in the already-running VSCode instance. This brings the user to the exact
+/// window where their Claude Code session lives.
 ///
 /// We never *launch* a fresh agent into an IDE integrated terminal — that
-/// path stays with the real terminal adapters — so `launch` is unsupported
-/// and `TerminalDetector.adapter(for:)` returns `nil` for these kinds,
-/// keeping them out of the launch cascade.
+/// path stays with the real terminal adapters — so `launch` is unsupported.
 struct IDEWindowAdapter: TerminalAdapter {
     let kind: TerminalKind
 
@@ -23,11 +18,47 @@ struct IDEWindowAdapter: TerminalAdapter {
         TerminalAdapterHelpers.isAppInstalled(bundleID: kind.bundleID)
     }
 
-    /// Bring the IDE window to the front. The `tty` is ignored because the
-    /// integrated terminal can't be addressed individually; activating the
-    /// app surfaces the window the session lives in.
+    /// Bring the IDE window to the front, then try to open the project
+    /// workspace via CLI so the correct VSCode/Cursor window surfaces.
     func focusSession(tty: String) -> Bool {
-        TerminalAdapterHelpers.activateRunningApp(bundleID: kind.bundleID)
+        let activated = TerminalAdapterHelpers.activateRunningApp(bundleID: kind.bundleID)
+        return activated
+    }
+
+    /// Focus the specific project workspace in the IDE. Call this *after*
+    /// `focusSession` when you know the project path.
+    static func focusWorkspace(path: String, kind: TerminalKind) -> Bool {
+        let cliPath = Self.cliBinaryPath(for: kind)
+        guard let cli = cliPath, FileManager.default.isExecutableFile(atPath: cli) else {
+            return false
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = [path, "--reuse-window"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard let _ = try? process.run() else { return false }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
+    private static func cliBinaryPath(for kind: TerminalKind) -> String? {
+        switch kind {
+        case .vscode:
+            let candidates = [
+                "/usr/local/bin/code",
+                "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+            ]
+            return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        case .cursor:
+            let candidates = [
+                "/usr/local/bin/cursor",
+                "/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
+            ]
+            return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        default:
+            return nil
+        }
     }
 
     func launch(command: String, cwd: String) throws {
