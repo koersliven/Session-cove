@@ -7,7 +7,7 @@ set -e
 APP_NAME="Session Cove"
 BUNDLE_ID="com.sessioncove.app"
 EXECUTABLE="SessionCove"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.1.8}"
 UNIVERSAL="${UNIVERSAL:-1}"
 
 OUT_DIR=".build/release"
