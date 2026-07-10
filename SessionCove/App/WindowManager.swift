@@ -30,6 +30,15 @@ final class WindowManager {
         } catch {
             viewModel.hookIntegrationError = error.localizedDescription
         }
+
+        // Phase 2 — Codex app-server takeover. When Codex is enabled, SC
+        // hosts a `codex app-server` and drives its full interactive
+        // protocol (command/file/permission approvals + userInput questions)
+        // over WebSocket, surfacing through the same pending/response queue
+        // as the hook path. Only started when the user has Codex enabled.
+        if CoveSettings.shared.enabledProviders.contains("codex") {
+            Task { await CodexAppServerClient.shared.start() }
+        }
         // Seed the diff cache AFTER the initial fan-out. Any subsequent
         // change notification will compute (new \ old) and (old \ new)
         // against this snapshot.
@@ -87,6 +96,7 @@ final class WindowManager {
             enabledProvidersObserver = nil
         }
         viewModel?.stopHookPolling()
+        Task { await CodexAppServerClient.shared.stop() }
         controller?.handleDisplayModeWillChange()
         controller?.close()
         controller = nil
@@ -109,11 +119,17 @@ final class WindowManager {
             case "qoder":     try? ClaudePermissionHook.installForQoder()
             case "qoderwork": try? ClaudePermissionHook.installForQoderWork()
             case "cursor":    try? ClaudePermissionHook.installForCursor()
+            case "codex":
+                try? ClaudePermissionHook.installForCodex()
+                Task { await CodexAppServerClient.shared.start() }
             default:          break  // unknown provider id — ignore
             }
         }
         for providerId in removed {
             ClaudePermissionHook.uninstall(providerId: providerId)
+            if providerId == "codex" {
+                Task { await CodexAppServerClient.shared.stop() }
+            }
         }
     }
 

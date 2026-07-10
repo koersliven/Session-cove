@@ -19,6 +19,17 @@ struct UIAffordances: Sendable {
     let askQuestionTitle: String
 }
 
+/// On-disk organization of a provider's transcript files. Consumed by
+/// `SessionScanner` to choose a traversal strategy. See
+/// `AgentProvider.transcriptLayout` for per-shape semantics.
+enum TranscriptLayout: Sendable {
+    /// `<root>/<encodedProject>/<subpath>/<id>.jsonl` (Claude, Qoder, Cursor).
+    case projectDirectories
+    /// `<root>/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` (Codex). Project cwd is
+    /// stored inside each file rather than in a directory name.
+    case flatDatePartitioned
+}
+
 /// Abstraction over a coding-agent framework that Session Cove can manage
 /// (Claude Code, and — in future steps — Qoder, Codex, etc.).
 ///
@@ -52,6 +63,21 @@ protocol AgentProvider: Sendable {
     /// root — both must be discovered.
     var transcriptSubpaths: [String] { get }
 
+    /// Describes how transcript files are organized on disk so
+    /// `SessionScanner` can pick the right traversal strategy.
+    ///
+    ///   * `.projectDirectories` (default) - Claude / Qoder shape:
+    ///     `<root>/<encodedProject>/<subpath>/<id>.jsonl`. Each top-level
+    ///     directory is one project island; the directory name encodes the
+    ///     project path.
+    ///   * `.flatDatePartitioned` - Codex shape:
+    ///     `<root>/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`. There is no
+    ///     per-project directory; the project `cwd` lives *inside* each file
+    ///     (the `session_meta` header). The scanner walks the tree, parses
+    ///     every file, then groups the resulting records by their parsed
+    ///     `projectPath` into islands.
+    var transcriptLayout: TranscriptLayout { get }
+
     /// Settings file used by the framework's hook system, if any.
     /// `nil` when the framework does not expose hooks.
     var settingsPath: URL? { get }
@@ -80,6 +106,14 @@ protocol AgentProvider: Sendable {
     /// whether to show 拒绝/始终允许/允许 buttons (true) or a single
     /// "打开 <provider>" focus button (false).
     var supportsExternalApproval: Bool { get }
+
+    /// True when the approval ping card should offer a "始终允许" (always
+    /// allow) button in addition to 允许/拒绝. Claude/Qoder support this via
+    /// Session Cove's own allowlist + trusted-session shortcuts. Codex only
+    /// understands a per-request allow/deny verdict from its hook (its
+    /// `PermissionRequestDecisionWire.behavior` enum is exactly
+    /// `allow`/`deny`), so the card hides the always-allow affordance for it.
+    var supportsAlwaysAllow: Bool { get }
 }
 
 extension AgentProvider {
@@ -90,8 +124,16 @@ extension AgentProvider {
     /// Default: no GUI host (CLI-only providers like Claude).
     var bundleIdentifier: String? { nil }
 
+    /// Default: the Claude/Qoder project-directory layout. Codex overrides
+    /// to `.flatDatePartitioned`.
+    var transcriptLayout: TranscriptLayout { .projectDirectories }
+
     /// Default: assume the agent honors hook stdout decisions, like
     /// Claude Code does. IDE-hosted agents that rely on internal sandbox
     /// dialogs (Qoder, Cursor) override to false.
     var supportsExternalApproval: Bool { true }
+
+    /// Default: providers that honor external approval also support the
+    /// always-allow shortcut (Claude/Qoder). Codex overrides to false.
+    var supportsAlwaysAllow: Bool { true }
 }

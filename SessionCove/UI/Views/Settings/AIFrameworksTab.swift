@@ -25,7 +25,7 @@ struct AIFrameworksTab: View {
     @State private var installState: [String: Bool] = [:]
 
     /// Stable display order: claude, qoder, qoderwork, cursor.
-    private let orderedIds: [String] = ["claude", "qoder", "qoderwork", "cursor"]
+    private let orderedIds: [String] = ["claude", "qoder", "qoderwork", "cursor", "codex"]
 
     var body: some View {
         Form {
@@ -66,13 +66,18 @@ struct AIFrameworksTab: View {
 
     @ViewBuilder
     private func providerRow(_ provider: any AgentProvider) -> some View {
+        // Providers without a hook settings file (Codex) can't install a
+        // permission bridge — Session Cove only reads their session history.
+        // Show a read-only status and hide the install button for them.
+        let hasHooks = provider.settingsPath != nil
+
         HStack(alignment: .center, spacing: 10) {
-            statusDot(for: provider.id)
+            statusDot(for: provider.id, hasHooks: hasHooks)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(provider.displayName)
                     .font(.body)
-                Text(installState[provider.id] == true ? "已安装钩子" : "未安装钩子")
+                Text(subtitle(for: provider.id, hasHooks: hasHooks))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -83,12 +88,14 @@ struct AIFrameworksTab: View {
             // user wants to force a re-install (e.g. after editing the
             // target settings.json by hand) without toggling off-and-on.
             // Buttons go through the same code path the toggle observer
-            // uses, so behavior is identical.
-            Button(installState[provider.id] == true ? "重装" : "安装") {
-                runInstall(providerId: provider.id)
+            // uses, so behavior is identical. Hidden for hook-less providers.
+            if hasHooks {
+                Button(installState[provider.id] == true ? "重装" : "安装") {
+                    runInstall(providerId: provider.id)
+                }
+                .controlSize(.small)
+                .disabled(!settings.enabledProviders.contains(provider.id))
             }
-            .controlSize(.small)
-            .disabled(!settings.enabledProviders.contains(provider.id))
 
             Toggle("", isOn: toggleBinding(for: provider.id))
                 .labelsHidden()
@@ -99,13 +106,36 @@ struct AIFrameworksTab: View {
         .padding(.vertical, 2)
     }
 
-    @ViewBuilder
-    private func statusDot(for providerId: String) -> some View {
+    /// Row subtitle: hook install status for hook-capable providers, or a
+    /// read-only note for providers we can only observe (Codex).
+    private func subtitle(for providerId: String, hasHooks: Bool) -> String {
+        guard hasHooks else { return "仅读取会话历史（无审批钩子）" }
         let installed = installState[providerId] == true
-        Circle()
-            .fill(installed ? Color.green : Color.secondary.opacity(0.4))
-            .frame(width: 8, height: 8)
-            .help(installed ? "钩子已安装" : "钩子未安装")
+        if providerId == "codex" {
+            // Codex requires a one-time in-terminal trust of the hook after
+            // we write it (its startup "hooks need review" prompt).
+            return installed ? "已写入钩子（首次需在 Codex 里确认信任）" : "未安装钩子"
+        }
+        return installed ? "已安装钩子" : "未安装钩子"
+    }
+
+    @ViewBuilder
+    private func statusDot(for providerId: String, hasHooks: Bool) -> some View {
+        // Hook-less providers (Codex) show a neutral blue "read-only" dot
+        // when enabled rather than the green/grey install indicator.
+        if !hasHooks {
+            let enabled = settings.enabledProviders.contains(providerId)
+            Circle()
+                .fill(enabled ? Color.blue.opacity(0.7) : Color.secondary.opacity(0.4))
+                .frame(width: 8, height: 8)
+                .help(enabled ? "只读会话历史" : "未启用")
+        } else {
+            let installed = installState[providerId] == true
+            Circle()
+                .fill(installed ? Color.green : Color.secondary.opacity(0.4))
+                .frame(width: 8, height: 8)
+                .help(installed ? "钩子已安装" : "钩子未安装")
+        }
     }
 
     // MARK: - Bindings & actions
@@ -135,6 +165,7 @@ struct AIFrameworksTab: View {
         case "qoder":     try? ClaudePermissionHook.installForQoder()
         case "qoderwork": try? ClaudePermissionHook.installForQoderWork()
         case "cursor":    try? ClaudePermissionHook.installForCursor()
+        case "codex":     try? ClaudePermissionHook.installForCodex()
         default:          break
         }
         refreshInstallState()
@@ -142,7 +173,14 @@ struct AIFrameworksTab: View {
 
     private func refreshInstallState() {
         var next: [String: Bool] = [:]
+        let registry = AgentProviderRegistry.shared
         for id in orderedIds {
+            // Skip hook status for providers that have no settings file
+            // (Codex) — there is nothing to install.
+            if registry.provider(for: id)?.settingsPath == nil {
+                next[id] = false
+                continue
+            }
             next[id] = ClaudePermissionHook.isInstalled(providerId: id)
         }
         installState = next

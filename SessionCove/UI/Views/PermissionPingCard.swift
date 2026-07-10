@@ -47,7 +47,11 @@ struct PermissionPingCard: View {
                 if provider.supportsExternalApproval {
                     HStack(spacing: 5) {
                         pingButton(.deny, style: .quiet)
-                        pingButton(.alwaysAllow, style: .primary)
+                        // Codex has no "always allow" verdict — hide it and
+                        // show only 拒绝/允许 for providers that opt out.
+                        if provider.supportsAlwaysAllow {
+                            pingButton(.alwaysAllow, style: .primary)
+                        }
                         pingButton(.allow, style: .blue)
                     }
                 } else {

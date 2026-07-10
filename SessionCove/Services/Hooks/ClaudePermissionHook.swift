@@ -6,6 +6,14 @@ enum ClaudePermissionHook {
     private static let hookDirectory = supportDirectory.appendingPathComponent("hooks", isDirectory: true)
     private static let pendingDirectory = hookDirectory.appendingPathComponent("pending", isDirectory: true)
     private static let responseDirectory = hookDirectory.appendingPathComponent("responses", isDirectory: true)
+
+    /// Shared pending/response directories, exposed so other ingress paths
+    /// (e.g. `CodexAppServerClient`, which delivers approvals/questions over a
+    /// WebSocket instead of a Python hook) can reuse the SAME on-disk queue
+    /// that `hookPollTask` already consumes — surfacing through the existing
+    /// `PermissionPingCard` / `HookQuestionView` UI with no extra plumbing.
+    static var sharedPendingDirectory: URL { pendingDirectory }
+    static var sharedResponseDirectory: URL { responseDirectory }
     private static let binDirectory = supportDirectory.appendingPathComponent("bin", isDirectory: true)
     private static let scriptURL = binDirectory.appendingPathComponent("session_cove_claude_hook.py")
     private static let managedMarker = "Session Cove managed PermissionRequest hook"
@@ -36,6 +44,9 @@ enum ClaudePermissionHook {
         }
         if enabled.contains("cursor") {
             try? installForCursor()
+        }
+        if enabled.contains("codex") {
+            try? installForCodex()
         }
     }
 
@@ -72,6 +83,26 @@ enum ClaudePermissionHook {
         try writeCursorHooks(install: true)
     }
 
+    /// Install the Session Cove hooks into `~/.codex/hooks.json`.
+    /// Codex 0.143+ uses the same Claude-style schema (top-level `hooks`
+    /// dict, PascalCase events, `{matcher, hooks:[{type,command,timeout}]}`
+    /// arrays), so we reuse `writeClaudeStyleSettings` — which also strips
+    /// ping-island entries and preserves the user's audit/r2c/guard hooks.
+    ///
+    /// NOTE ON TRUST: Codex gates every hook behind a per-hook trust hash in
+    /// `config.toml [hooks.state]`. Because our command string changes, Codex
+    /// treats it as an untrusted hook and shows a one-time "N hooks need
+    /// review before they can run" prompt on next launch (see Codex's
+    /// startup_hooks_review). The user approves once; Codex then records the
+    /// hash itself. We deliberately do NOT try to forge the opaque trust
+    /// hash — that would be brittle across Codex versions.
+    static func installForCodex() throws {
+        try writeClaudeStyleSettings(
+            settingsURL: codexHooksURL,
+            providerArg: "codex"
+        )
+    }
+
     /// Reverse the install for a single provider. Removes every Session
     /// Cove-owned entry from that framework's settings file but leaves
     /// pre-existing user entries (r2c hooks, audit scripts, etc.) verbatim.
@@ -92,6 +123,8 @@ enum ClaudePermissionHook {
             try? removeFromClaudeStyleSettings(settingsURL: qoderWorkSettingsURL)
         case "cursor":
             try? writeCursorHooks(install: false)
+        case "codex":
+            try? removeFromClaudeStyleSettings(settingsURL: codexHooksURL)
         default:
             return
         }
@@ -108,6 +141,7 @@ enum ClaudePermissionHook {
         case "qoder":     url = qoderSettingsURL
         case "qoderwork": url = qoderWorkSettingsURL
         case "cursor":    url = cursorHooksURL
+        case "codex":     url = codexHooksURL
         default:          return false
         }
         guard let url, let data = try? Data(contentsOf: url) else {
@@ -163,7 +197,22 @@ enum ClaudePermissionHook {
 
         SOCKET_PATH = "/tmp/session-cove.sock"
 
+        def parse_provider_arg(argv):
+            # `--provider <id>` tells Session Cove which framework this hook
+            # belongs to (claude / qoder / codex / ...). Injected into the
+            # payload so the socket server can tag the pending file and the
+            # ping card renders the right affordances (e.g. Codex hides the
+            # always-allow button). Defaults to claude for back-compat.
+            args = list(argv[1:])
+            i = 0
+            while i < len(args):
+                if args[i] == "--provider" and i + 1 < len(args):
+                    return args[i + 1]
+                i += 1
+            return "claude"
+
         def main():
+            provider_id = parse_provider_arg(sys.argv)
             raw = sys.stdin.read()
             if not raw.strip():
                 return 0
@@ -171,6 +220,10 @@ enum ClaudePermissionHook {
                 payload = json.loads(raw)
             except Exception:
                 return 0
+            if isinstance(payload, dict):
+                # Codex normalizes its PascalCase event names, but be defensive:
+                # inject the provider so the server never guesses.
+                payload["session_cove_provider"] = provider_id
 
             try:
                 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -226,6 +279,12 @@ enum ClaudePermissionHook {
     private static var cursorHooksURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cursor", isDirectory: true)
+            .appendingPathComponent("hooks.json")
+    }
+
+    private static var codexHooksURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
             .appendingPathComponent("hooks.json")
     }
 
@@ -500,12 +559,18 @@ enum ClaudePermissionHook {
         try data.write(to: responseDirectory.appendingPathComponent("\(request.id).json"), options: .atomic)
         try? FileManager.default.removeItem(at: pendingDirectory.appendingPathComponent("\(request.id).json"))
 
-        if decision == .alwaysAllow {
-            addAllowlistRule(for: request)
-        }
-        if decision == .alwaysAllow || decision == .allowSession {
-            if let sessionId = request.sessionId, !sessionId.isEmpty {
-                addTrustedSession(sessionId)
+        // The file-based allowlist + trusted-session cache are Claude-family
+        // mechanisms (matched by the Python hook). Codex approvals flow back
+        // over the app-server WebSocket via CodexAppServerClient (which maps
+        // 始终允许 → acceptForSession), so skip the Claude allowlist for it.
+        if request.providerId != "codex" {
+            if decision == .alwaysAllow {
+                addAllowlistRule(for: request)
+            }
+            if decision == .alwaysAllow || decision == .allowSession {
+                if let sessionId = request.sessionId, !sessionId.isEmpty {
+                    addTrustedSession(sessionId)
+                }
             }
         }
     }
@@ -686,8 +751,13 @@ enum ClaudePermissionHook {
         root["hooks"] = hooks
 
         if let existingData, !containsSessionCoveCommandInData(existingData) {
+            // Derive the backup name from the ACTUAL settings file (Codex
+            // uses hooks.json, Claude/Qoder use settings.json) so we don't
+            // mislabel a hooks.json backup as "settings.…". e.g.
+            // hooks.json -> hooks.session-cove-backup.json.
+            let base = settingsURL.deletingPathExtension().lastPathComponent
             let backupURL = settingsURL.deletingLastPathComponent()
-                .appendingPathComponent("settings.session-cove-backup.json")
+                .appendingPathComponent("\(base).session-cove-backup.json")
             if !FileManager.default.fileExists(atPath: backupURL.path) {
                 try? existingData.write(to: backupURL, options: .atomic)
             }
@@ -971,6 +1041,36 @@ enum ClaudePermissionHook {
             debug_log("QUESTION EMIT [" + hook_event + "]: " + output[:500])
             print(output, flush=True)
 
+        def emit_codex_permission(decision):
+            # Codex's PermissionRequest hook consumes
+            #   {"hookSpecificOutput":{"hookEventName":"PermissionRequest",
+            #    "decision":{"behavior":"allow"|"deny"}}}
+            # Its wire enum `PermissionRequestDecisionWire.behavior` is EXACTLY
+            # allow / deny (deny may carry a `message`). CRITICAL: never emit
+            # `updatedInput` / `updatedPermissions` / `interrupt` for Codex —
+            # those Claude-only fields make Codex FAIL THE HOOK CLOSED (reject).
+            # So we emit only the minimal decision object.
+            is_deny = isinstance(decision, dict) and decision.get("decision") == "deny"
+            behavior = "deny" if is_deny else "allow"
+            inner = {"behavior": behavior}
+            if is_deny:
+                inner["message"] = "Denied in Session Cove."
+            output = json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": inner,
+                }
+            }, ensure_ascii=False)
+            debug_log("emit_codex_permission stdout=" + output)
+            print(output, flush=True)
+
+        def emit_codex_question(decision, tool_input, hook_event="PermissionRequest"):
+            # Phase 1 does NOT drive Codex AskUserQuestion / request_user_input
+            # through hooks (that's a separate ElicitationRequest / server RPC
+            # path, not PermissionRequest). Stay silent so Codex falls back to
+            # its own in-terminal question UI rather than us guessing an answer.
+            return
+
         def emit_cursor_permission(decision):
             # Cursor's IDE-internal sandbox dialog ignores hook stdout
             # decisions (verified empirically across multiple emit shapes).
@@ -1018,6 +1118,7 @@ enum ClaudePermissionHook {
             "claude": {"permission": emit_claude_permission, "question": emit_claude_question},
             "qoder":  {"permission": emit_claude_permission, "question": emit_claude_question},
             "cursor": {"permission": emit_cursor_permission, "question": emit_cursor_question},
+            "codex":  {"permission": emit_codex_permission, "question": emit_codex_question},
         }
 
         # --- Output helpers (format matches Ping Island exactly for claude) ---

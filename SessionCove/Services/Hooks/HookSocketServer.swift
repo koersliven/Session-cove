@@ -233,7 +233,7 @@ final class HookSocketServer {
         let pending: [String: Any] = [
             "id": requestId,
             "schemaVersion": 4,
-            "providerId": "claude",
+            "providerId": request.providerId,
             "kind": "completion",
             "sessionId": sessionId,
             "toolName": "Stop",
@@ -279,10 +279,25 @@ final class HookSocketServer {
 
         // Build request_id WITHOUT event_name so PreToolUse and PermissionRequest
         // for the same AskUserQuestion share the SAME pending/response file.
-        // Include first question text so different questions get different IDs.
+        // For question tools: seed on the question text so different questions
+        // get different IDs. For approval tools: seed on a stable serialization
+        // of the FULL tool_input so different commands (e.g. two distinct Bash
+        // invocations in the same cwd) get DISTINCT IDs and never read each
+        // other's stale response file. Using only toolName|cwd caused every
+        // Bash approval in a directory to collide onto one ID → instant allow
+        // from a leftover response.
         let firstQuestionText = (toolInput["questions"] as? [[String: Any]])?
             .first?["question"] as? String ?? ""
-        let seed = "\(toolName)|\(firstQuestionText)|\(cwd)"
+        let inputDiscriminator: String
+        if isQuestionTool {
+            inputDiscriminator = firstQuestionText
+        } else if let jsonData = try? JSONSerialization.data(withJSONObject: toolInput, options: [.sortedKeys]),
+                  let jsonStr = String(data: jsonData, encoding: .utf8) {
+            inputDiscriminator = jsonStr
+        } else {
+            inputDiscriminator = firstQuestionText
+        }
+        let seed = "\(toolName)|\(inputDiscriminator)|\(cwd)"
         var h: UInt64 = 5381
         for byte in seed.utf8 { h = h &* 33 &+ UInt64(byte) }
         let requestId = String(format: "q-%016llx", h)
@@ -296,7 +311,7 @@ final class HookSocketServer {
         // Build pending file
         var pendingData: [String: Any] = [
             "id": requestId,
-            "providerId": "claude",
+            "providerId": request.providerId,
             "sessionId": sessionId,
             "toolName": toolName,
             "projectPath": cwd,
@@ -532,6 +547,13 @@ struct HookSocketRequest {
     var eventName: String { payload["hook_event_name"] as? String ?? "" }
     var toolName: String { payload["tool_name"] as? String ?? "" }
     var sessionId: String? { payload["session_id"] as? String }
+
+    /// Provider that fired this hook, injected by the socket bridge from its
+    /// `--provider <id>` argument. Drives the `providerId` written into the
+    /// pending file so the ping card renders the correct affordances
+    /// (Codex hides 始终允许; Qoder/Cursor show a focus button). Defaults to
+    /// "claude" for back-compat with bridges that don't inject it.
+    var providerId: String { payload["session_cove_provider"] as? String ?? "claude" }
 
     /// Dedup key: same question from PreToolUse and PermissionRequest
     /// should return the same answer. Key on tool_input + cwd (not event name).
