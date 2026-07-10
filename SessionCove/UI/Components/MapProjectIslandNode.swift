@@ -252,7 +252,7 @@ struct MapProjectIslandNode: View {
 
     /// Small text chip rendered next to the island display name when the
     /// project belongs to a non-Claude provider. Helps users tell apart
-    /// Claude/Qoder/Cursor sessions in the harbor map. nil for Claude
+    /// Claude/Qoder/Cursor/Codex sessions in the harbor map. nil for Claude
     /// (no badge — keeps the existing visual unchanged for default users).
     private var providerBadge: (label: String, foreground: Color, background: Color)? {
         switch island.providerId {
@@ -265,6 +265,9 @@ struct MapProjectIslandNode: View {
         case "cursor":
             return ("CU", Color(red: 0.55, green: 0.78, blue: 0.98),
                     Color(red: 0.55, green: 0.78, blue: 0.98).opacity(0.18))
+        case "codex":
+            return ("CX", Color(red: 0.40, green: 0.85, blue: 0.60),
+                    Color(red: 0.40, green: 0.85, blue: 0.60).opacity(0.18))
         default:
             return nil
         }

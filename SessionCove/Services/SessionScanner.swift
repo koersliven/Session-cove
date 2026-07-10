@@ -30,6 +30,16 @@ enum SessionScanner {
     // MARK: - Per-provider scan
 
     private static func scan(provider: any AgentProvider) -> [ProjectIsland] {
+        switch provider.transcriptLayout {
+        case .projectDirectories:
+            return scanProjectDirectories(provider: provider)
+        case .flatDatePartitioned:
+            return scanFlatDatePartitioned(provider: provider)
+        }
+    }
+
+    /// Claude / Qoder / Cursor layout: `<root>/<encodedProject>/<subpath>/*.jsonl`.
+    private static func scanProjectDirectories(provider: any AgentProvider) -> [ProjectIsland] {
         let fileManager = FileManager.default
         let root = provider.transcriptRoot
         let rootPath = root.path
@@ -101,6 +111,85 @@ enum SessionScanner {
                 id: islandId,
                 providerId: provider.id,
                 path: sessions.first?.projectPath ?? dirName,
+                displayName: displayName,
+                sessions: sessions
+            )
+            islands.append(island)
+        }
+
+        return islands
+    }
+
+    // MARK: - Flat, date-partitioned scan (Codex)
+
+    /// Codex layout: `<root>/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`. There is
+    /// no per-project directory, so we recursively collect every `.jsonl`,
+    /// parse each into a `SessionRecord` (whose `projectPath` comes from the
+    /// file's `session_meta.cwd`), then group by `projectPath` into islands.
+    private static func scanFlatDatePartitioned(provider: any AgentProvider) -> [ProjectIsland] {
+        let fileManager = FileManager.default
+        let root = provider.transcriptRoot
+        let rootPath = root.path
+
+        var isDir: ObjCBool = false
+        guard fileManager.fileExists(atPath: rootPath, isDirectory: &isDir), isDir.boolValue else {
+            print("[SessionScanner] transcriptRoot missing for provider \(provider.id): \(rootPath)")
+            return []
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        var records: [SessionRecord] = []
+        for case let fileURL as URL in enumerator {
+            guard fileURL.pathExtension == "jsonl" else { continue }
+            let fileName = fileURL.lastPathComponent
+            guard !fileName.hasPrefix("agent-") else { continue }
+
+            // The "encoded dir" for the flat layout is the date-partition path
+            // relative to root (e.g. "2026/07/08"), used only as a fallback if
+            // the file has no parseable cwd.
+            let relativeDir = fileURL.deletingLastPathComponent().path
+                .replacingOccurrences(of: rootPath + "/", with: "")
+
+            if let record = SessionParser.parse(
+                filePath: fileURL.path,
+                projectDirEncoded: relativeDir,
+                providerId: provider.id
+            ) {
+                records.append(record)
+            }
+        }
+
+        guard !records.isEmpty else { return [] }
+
+        // Group by resolved project path so all Codex sessions in the same
+        // repo collapse into one island (matching Claude's per-project model).
+        var grouped: [String: [SessionRecord]] = [:]
+        for record in records {
+            grouped[record.projectPath, default: []].append(record)
+        }
+
+        var islands: [ProjectIsland] = []
+        for (projectPath, group) in grouped {
+            var sessions = group
+            sessions.sort { $0.lastModified > $1.lastModified }
+
+            let displayName = projectPath
+                .components(separatedBy: "/").last ?? projectPath
+            // Namespace by provider + project path so Codex islands never
+            // collide with Claude/Qoder islands keyed on encoded dir names.
+            let islandId = "\(provider.id):\(projectPath)"
+
+            let island = ProjectIsland(
+                id: islandId,
+                providerId: provider.id,
+                path: projectPath,
                 displayName: displayName,
                 sessions: sessions
             )
